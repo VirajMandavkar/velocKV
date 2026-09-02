@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 )
 
@@ -56,4 +57,25 @@ func TestLeafNode_BasicOperations(t *testing.T) {
 		t.Error("Expected key \"apple\" to be missing after deletion, but it was found")
 	}
 
+}
+
+func BenchmarkLeafNode_PutReverse(b *testing.B) {
+	leafNode := NewLeafNode()
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		index := maxCapacity - 1 - (i % maxCapacity)
+
+		keyString := fmt.Sprintf("%04d", index)
+		keyByte := []byte(keyString)
+
+		_ = leafNode.Put(keyByte, keyByte)
+
+		if (i+1)%maxCapacity == 0 {
+			b.StopTimer()
+			leafNode = NewLeafNode()
+			b.StartTimer()
+		}
+	}
 }

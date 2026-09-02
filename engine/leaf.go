@@ -11,7 +11,7 @@ type LeafNode struct {
 	next  *LeafNode
 }
 
-var maxCapacity = 4
+var maxCapacity = 1000000
 
 func NewLeafNode() *LeafNode {
 	return &LeafNode{

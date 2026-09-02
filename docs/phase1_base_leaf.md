@@ -14,3 +14,16 @@
 - *The Core Bottleneck*: While finding the position takes \(\mathcal{O}(N)\) or \(\mathcal{O}(\log N)\) via scan/binary search, your current implementation relies on shifting existing memory via copy().
 
 - *The Physical Shift*: To inject a key into the middle of the leaf, you must move all subsequent elements (\(N - \text{insertIdx}\)) down by one memory slot. For large capacities, this memory-copy loop blocks performance, making it the explicit target for optimization in Phase 2.
+
+
+
+**BENCHMARK SCORES**
+Maxcapacity = 1M 
+e=2s ./engine
+goos: linux
+goarch: amd64
+pkg: velocakv/engine
+cpu: 12th Gen Intel(R) Core(TM) i5-1235U
+BenchmarkLeafNode_P  155394         551575 ns/op           24 B/op          3 allocs/op
+PASS
+ok      velocakv/engine 86.003s
