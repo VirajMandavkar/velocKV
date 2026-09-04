@@ -10,14 +10,18 @@ type DeltaNode struct {
 }
 
 type ChainNode struct {
-	head *DeltaNode
-	base *LeafNode
+	head     *DeltaNode
+	base     *LeafNode
+	chainLen int
 }
+
+const defaultDeltaThreshold = 8
 
 func NewChainNode() *ChainNode {
 	return &ChainNode{
-		head: nil,
-		base: NewLeafNode(),
+		head:     nil,
+		base:     NewLeafNode(),
+		chainLen: 0,
 	}
 }
 
@@ -33,12 +37,20 @@ func NewDeltaNode(key []byte, value []byte, isTombstone bool, next *DeltaNode) *
 func (c *ChainNode) Put(key []byte, value []byte) (bool, error) {
 	newNode := NewDeltaNode(key, value, false, c.head)
 	c.head = newNode
+	c.chainLen++
+	if c.chainLen >= defaultDeltaThreshold {
+		c.Consolidation()
+	}
 	return true, nil
 }
 
 func (c *ChainNode) Delete(key []byte) bool {
 	tombNode := NewDeltaNode(key, nil, true, c.head)
 	c.head = tombNode
+	c.chainLen++
+	if c.chainLen >= defaultDeltaThreshold {
+		c.Consolidation()
+	}
 	return true
 }
 
@@ -103,4 +115,5 @@ func (c *ChainNode) Consolidation() {
 
 	c.base = newBase
 	c.head = nil
+	c.chainLen = 0
 }

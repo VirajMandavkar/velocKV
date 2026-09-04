@@ -128,7 +128,56 @@ func TestChainNode_Consolidation(t *testing.T) {
 	}
 }
 
-func BenchmarkChainNode_PutReverse(b *testing.B) {
+func TestChainNode_AutoConsolidation(t *testing.T) {
+	chainNode := NewChainNode()
+
+	// Step 1: Insert keys 0-6 (7 operations)
+	for i := 0; i < 7; i++ {
+		keyString := fmt.Sprintf("%d", i)
+		keyByte := []byte(keyString)
+		_, err := chainNode.Put(keyByte, keyByte)
+		if err != nil {
+			t.Fatalf("Failed to Put key %q: %v", keyString, err)
+		}
+	}
+
+	// Assert: chainLen should be 7 and head should not be nil
+	if chainNode.chainLen != 7 {
+		t.Errorf("After 7 Puts, expected chainLen == 7, got %d", chainNode.chainLen)
+	}
+	if chainNode.head == nil {
+		t.Errorf("After 7 Puts, expected chainNode.head to be non-nil")
+	}
+
+	// Step 2: Insert key 7 (8th operation - triggers auto-consolidation)
+	_, err := chainNode.Put([]byte("7"), []byte("7"))
+	if err != nil {
+		t.Fatalf("Failed to Put key 7: %v", err)
+	}
+
+	// Assert: After consolidation, chainLen should be 0 and head should be nil
+	if chainNode.chainLen != 0 {
+		t.Errorf("After auto-consolidation, expected chainLen == 0, got %d", chainNode.chainLen)
+	}
+	if chainNode.head != nil {
+		t.Errorf("After auto-consolidation, expected chainNode.head to be nil")
+	}
+
+	// Step 3: Verify all 8 keys are retrievable
+	for i := 0; i < 8; i++ {
+		keyString := fmt.Sprintf("%d", i)
+		val, found := chainNode.Get([]byte(keyString))
+		if !found {
+			t.Errorf("Expected to find key %q after consolidation, but it was not found", keyString)
+			continue
+		}
+		if !bytes.Equal(val, []byte(keyString)) {
+			t.Errorf("For key %q, expected value %q, got %q", keyString, keyString, string(val))
+		}
+	}
+}
+
+func BenchmarkChainNode_PutReverse_1M(b *testing.B) {
 	chainNode := NewChainNode()
 
 	b.ResetTimer()
@@ -140,5 +189,34 @@ func BenchmarkChainNode_PutReverse(b *testing.B) {
 		keyByte := []byte(keyString)
 
 		_, _ = chainNode.Put(keyByte, keyByte)
+	}
+}
+
+func BenchmarkChainNode_Get(b *testing.B) {
+	chainNode := NewChainNode()
+
+	// Populate base page with 1,000 keys
+	for i := 0; i < 1000; i++ {
+		keyString := fmt.Sprintf("%04d", i)
+		keyByte := []byte(keyString)
+		_ = chainNode.base.Put(keyByte, keyByte)
+	}
+
+	// Add deltas to build a chain (simulate multiple updates)
+	for i := 0; i < 100; i++ {
+		keyString := fmt.Sprintf("%04d", i%1000)
+		keyByte := []byte(keyString)
+		_, _ = chainNode.Put(keyByte, []byte("delta_value"))
+	}
+
+	b.ResetTimer()
+
+	// Benchmark Get operations on keys in the base page
+	// This forces full chain traversal before finding the key in base
+	for i := 0; i < b.N; i++ {
+		keyIndex := i % 1000
+		keyString := fmt.Sprintf("%04d", keyIndex)
+		keyByte := []byte(keyString)
+		_, _ = chainNode.Get(keyByte)
 	}
 }
