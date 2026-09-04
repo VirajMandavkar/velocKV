@@ -56,3 +56,51 @@ func (c *ChainNode) Get(key []byte) ([]byte, bool) {
 	}
 	return c.base.Get(key)
 }
+
+func (c *ChainNode) Consolidation() {
+
+	if c.head == nil {
+		return
+	}
+	seen := make(map[string]bool)
+
+	type update struct {
+		key   []byte
+		value []byte
+	}
+	var pendingUpdates []update
+
+	curr := c.head
+	for curr != nil {
+		k := string(curr.key)
+		if !seen[k] {
+			seen[k] = true
+			if !curr.isTombstone {
+				pendingUpdates = append(pendingUpdates, update{
+					key:   curr.key,
+					value: curr.value,
+				})
+			}
+		}
+		curr = curr.next
+	}
+
+	for i := 0; i < len(c.base.key); i++ {
+		basekey := c.base.key[i]
+		if !seen[string(basekey)] {
+			pendingUpdates = append(pendingUpdates, update{
+				key:   basekey,
+				value: c.base.value[i],
+			})
+		}
+	}
+
+	newBase := NewLeafNode()
+
+	for _, rec := range pendingUpdates {
+		_ = newBase.Put(rec.key, rec.value)
+	}
+
+	c.base = newBase
+	c.head = nil
+}
