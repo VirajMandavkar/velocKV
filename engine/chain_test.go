@@ -19,7 +19,7 @@ func TestChainNode(t *testing.T) {
 	}
 
 	for _, td := range testdata {
-		_, err := chainNode.Put([]byte(td.key), []byte(td.value))
+		_, _, err := chainNode.Put([]byte(td.key), []byte(td.value))
 		if err != nil {
 			t.Fatalf("Failed to Put key %q: %v", td.key, err)
 		}
@@ -85,7 +85,7 @@ func TestChainNode_Consolidation(t *testing.T) {
 	}
 
 	for _, td := range testdata2 {
-		_, err := chainNode.Put([]byte(td.key), []byte(td.value))
+		_, _, err := chainNode.Put([]byte(td.key), []byte(td.value))
 		if err != nil {
 			t.Fatalf("Failed to Put key %q: %v", td.key, err)
 		}
@@ -135,7 +135,7 @@ func TestChainNode_AutoConsolidation(t *testing.T) {
 	for i := 0; i < 7; i++ {
 		keyString := fmt.Sprintf("%d", i)
 		keyByte := []byte(keyString)
-		_, err := chainNode.Put(keyByte, keyByte)
+		_, _, err := chainNode.Put(keyByte, keyByte)
 		if err != nil {
 			t.Fatalf("Failed to Put key %q: %v", keyString, err)
 		}
@@ -150,7 +150,7 @@ func TestChainNode_AutoConsolidation(t *testing.T) {
 	}
 
 	// Step 2: Insert key 7 (8th operation - triggers auto-consolidation)
-	_, err := chainNode.Put([]byte("7"), []byte("7"))
+	_, _, err := chainNode.Put([]byte("7"), []byte("7"))
 	if err != nil {
 		t.Fatalf("Failed to Put key 7: %v", err)
 	}
@@ -177,6 +177,83 @@ func TestChainNode_AutoConsolidation(t *testing.T) {
 	}
 }
 
+func TestChainNode_Split(t *testing.T) {
+	// 1. Initialize a clean ChainNode
+	c := NewChainNode()
+
+	// Populate the base with 4 keys directly into the base page
+	// using your Phase 1 sorting logic.
+	keys := []string{"a", "b", "c", "d"}
+	for _, k := range keys {
+		err := c.base.Put([]byte(k), []byte("val_"+k))
+		if err != nil {
+			t.Fatalf("Failed setup: couldn't put key %q: %v", k, err)
+		}
+	}
+
+	// 2. Perform the Split operation
+	pivot, right := c.Split()
+
+	// 3. Verify the pivot key matches "c" (mid = 4 / 2 = 2)
+	expectedPivot := []byte("c")
+	if !bytes.Equal(pivot, expectedPivot) {
+		t.Errorf("Expected pivot key to be %q, got %q", string(expectedPivot), string(pivot))
+	}
+
+	// 4. Verify Left Node (c.base) boundaries contain exactly "a" and "b"
+	expectedLeft := []string{"a", "b"}
+	if len(c.base.key) != len(expectedLeft) {
+		t.Errorf("Expected left node to have %d keys, got %d", len(expectedLeft), len(c.base.key))
+	} else {
+		for i, k := range expectedLeft {
+			if !bytes.Equal(c.base.key[i], []byte(k)) {
+				t.Errorf("Left node mismatch at index %d: expected %q, got %q", i, k, string(c.base.key[i]))
+			}
+		}
+	}
+
+	// 5. Verify Right Node (right.base) boundaries contain exactly "c" and "d"
+	expectedRight := []string{"c", "d"}
+	if len(right.base.key) != len(expectedRight) {
+		t.Errorf("Expected right node to have %d keys, got %d", len(expectedRight), len(right.base.key))
+	} else {
+		for i, k := range expectedRight {
+			if !bytes.Equal(right.base.key[i], []byte(k)) {
+				t.Errorf("Right node mismatch at index %d: expected %q, got %q", i, k, string(right.base.key[i]))
+			}
+		}
+	}
+
+	// 6. Verify that BOTH nodes answer Get() calls correctly via the ChainNode front door
+	for _, k := range expectedLeft {
+		val, found := c.Get([]byte(k))
+		if !found {
+			t.Errorf("Left node failed to find key %q via Get()", k)
+		}
+		if !bytes.Equal(val, []byte("val_"+k)) {
+			t.Errorf("Left node returned wrong value for %q: got %q", k, string(val))
+		}
+	}
+
+	for _, k := range expectedRight {
+		val, found := right.Get([]byte(k))
+		if !found {
+			t.Errorf("Right node failed to find key %q via Get()", k)
+		}
+		if !bytes.Equal(val, []byte("val_"+k)) {
+			t.Errorf("Right node returned wrong value for %q: got %q", k, string(val))
+		}
+	}
+
+	// 7. Verify cross-contamination (Left should not find right elements, and vice versa)
+	if _, found := c.Get([]byte("c")); found {
+		t.Error("Left node mistakenly found key 'c' after split")
+	}
+	if _, found := right.Get([]byte("a")); found {
+		t.Error("Right node mistakenly found key 'a' after split")
+	}
+}
+
 func BenchmarkChainNode_PutReverse_1M(b *testing.B) {
 	chainNode := NewChainNode()
 
@@ -188,7 +265,7 @@ func BenchmarkChainNode_PutReverse_1M(b *testing.B) {
 		keyString := fmt.Sprintf("%02d", index)
 		keyByte := []byte(keyString)
 
-		_, _ = chainNode.Put(keyByte, keyByte)
+		_, _, _ = chainNode.Put(keyByte, keyByte)
 	}
 }
 
@@ -206,7 +283,7 @@ func BenchmarkChainNode_Get(b *testing.B) {
 	for i := 0; i < 100; i++ {
 		keyString := fmt.Sprintf("%04d", i%1000)
 		keyByte := []byte(keyString)
-		_, _ = chainNode.Put(keyByte, []byte("delta_value"))
+		_, _, _ = chainNode.Put(keyByte, []byte("delta_value"))
 	}
 
 	b.ResetTimer()

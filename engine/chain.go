@@ -15,7 +15,8 @@ type ChainNode struct {
 	chainLen int
 }
 
-const defaultDeltaThreshold = 8
+const defaultDeltaThreshold = 4
+const maxBaseKeys = 8
 
 func NewChainNode() *ChainNode {
 	return &ChainNode{
@@ -34,14 +35,18 @@ func NewDeltaNode(key []byte, value []byte, isTombstone bool, next *DeltaNode) *
 	}
 }
 
-func (c *ChainNode) Put(key []byte, value []byte) (bool, error) {
+func (c *ChainNode) Put(key []byte, value []byte) (pivot []byte, newChild Node, err error) {
 	newNode := NewDeltaNode(key, value, false, c.head)
 	c.head = newNode
 	c.chainLen++
 	if c.chainLen >= defaultDeltaThreshold {
 		c.Consolidation()
 	}
-	return true, nil
+	if len(c.base.key) > maxBaseKeys {
+		pivot, right := c.Split()
+		return pivot, right, nil
+	}
+	return nil, nil, nil
 }
 
 func (c *ChainNode) Delete(key []byte) bool {
@@ -116,4 +121,18 @@ func (c *ChainNode) Consolidation() {
 	c.base = newBase
 	c.head = nil
 	c.chainLen = 0
+}
+
+func (c *ChainNode) Split() (pivotKey []byte, rightNode *ChainNode) {
+	mid := len(c.base.key) / 2
+	pivotKey = c.base.key[mid]
+	rightNode = NewChainNode()
+
+	rightNode.base.key = append(rightNode.base.key, c.base.key[mid:]...)
+	rightNode.base.value = append(rightNode.base.value, c.base.value[mid:]...)
+
+	c.base.key = c.base.key[:mid]
+	c.base.value = c.base.value[:mid]
+
+	return pivotKey, rightNode
 }
