@@ -16,6 +16,8 @@ type Tree struct {
 	root Node
 }
 
+const maxInternalKeys = 5
+
 func (in *InternalNode) Get(key []byte) ([]byte, bool) {
 
 	for i := 0; i < len(in.key); i++ {
@@ -55,6 +57,21 @@ func (in *InternalNode) Put(key, value []byte) ([]byte, Node, error) {
 	copy(in.children[childIdx+2:], in.children[childIdx+1:])
 	in.children[childIdx+1] = newChild
 
+	if len(in.key) > maxInternalKeys {
+		mid := len(in.key) / 2
+		pivot := in.key[mid]
+
+		rightInternalNode := &InternalNode{
+			key:      append([][]byte(nil), in.key[mid+1:]...),
+			children: append([]Node(nil), in.children[mid+1:]...),
+		}
+
+		in.key = in.key[:mid]
+		in.children = in.children[:mid+1]
+
+		return pivot, rightInternalNode, nil
+	}
+
 	return nil, nil, nil
 }
 
@@ -78,6 +95,7 @@ func (t *Tree) Put(key, value []byte) error {
 	if newChild == nil {
 		return nil
 	}
+
 	newRoot := &InternalNode{
 		key:      [][]byte{pivot},
 		children: []Node{t.root, newChild},

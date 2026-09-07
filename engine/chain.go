@@ -15,7 +15,7 @@ type ChainNode struct {
 	chainLen int
 }
 
-const defaultDeltaThreshold = 4
+const defaultDeltaThreshold = 8
 const maxBaseKeys = 8
 
 func NewChainNode() *ChainNode {
@@ -42,11 +42,27 @@ func (c *ChainNode) Put(key []byte, value []byte) (pivot []byte, newChild Node, 
 	if c.chainLen >= defaultDeltaThreshold {
 		c.Consolidation()
 	}
+	if c.logicalKeyCount() > maxBaseKeys {
+		c.Consolidation()
+	}
 	if len(c.base.key) > maxBaseKeys {
 		pivot, right := c.Split()
 		return pivot, right, nil
 	}
 	return nil, nil, nil
+}
+
+func (c *ChainNode) logicalKeyCount() int {
+	newKeys := make(map[string]struct{})
+	for curr := c.head; curr != nil; curr = curr.next {
+		if _, found := newKeys[string(curr.key)]; found {
+			continue
+		}
+		if _, found := c.base.Get(curr.key); !found {
+			newKeys[string(curr.key)] = struct{}{}
+		}
+	}
+	return len(c.base.key) + len(newKeys)
 }
 
 func (c *ChainNode) Delete(key []byte) bool {
