@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"math/rand"
 	"testing"
 )
 
@@ -53,6 +54,76 @@ func TestTree_RootSplit(t *testing.T) {
 		}
 		if string(val) != "val_"+k {
 			t.Errorf("Key %s: expected val_%s, got %s", k, k, string(val))
+		}
+	}
+}
+
+func BenchmarkTree_Put(b *testing.B) {
+	t := &Tree{}
+	val := []byte("benchmark_value")
+
+	// Pre-generate keys so we don't benchmark string allocation
+	keys := make([][]byte, b.N)
+	for i := 0; i < b.N; i++ {
+		keys[i] = []byte(fmt.Sprintf("key-%08x", rand.Int31()))
+	}
+
+	b.ResetTimer() // Start the clock here
+
+	for i := 0; i < b.N; i++ {
+		t.Put(keys[i], val)
+	}
+}
+
+func BenchmarkTree_Get(b *testing.B) {
+	t := &Tree{}
+	val := []byte("benchmark_value")
+
+	// Insert 100,000 keys to build a realistic tree
+	numKeys := 100000
+	keys := make([][]byte, numKeys)
+	for i := 0; i < numKeys; i++ {
+		keys[i] = []byte(fmt.Sprintf("key-%08d", i))
+		t.Put(keys[i], val)
+	}
+
+	b.ResetTimer()
+
+	// Benchmark random reads
+	for i := 0; i < b.N; i++ {
+		idx := i % numKeys
+		_, found := t.Get(keys[idx])
+		if !found {
+			b.Fatalf("key missing: %s", keys[idx])
+		}
+	}
+}
+
+func BenchmarkTree_Scan(b *testing.B) {
+	t := &Tree{}
+	val := []byte("benchmark_value")
+
+	// Insert 100,000 keys sequentially
+	numKeys := 1000
+	for i := 0; i < numKeys; i++ {
+		t.Put([]byte(fmt.Sprintf("key-%08d", i)), val)
+	}
+
+	b.ResetTimer()
+
+	// Benchmark scanning ranges of 100 keys
+	for i := 0; i < b.N; i++ {
+		// Pick a random starting point that leaves room for 100 keys
+		startIdx := rand.Intn(numKeys - 100)
+		startKey := []byte(fmt.Sprintf("key-%08d", startIdx))
+		endKey := []byte(fmt.Sprintf("key-%08d", startIdx+100))
+
+		pairs, err := t.Scan(startKey, endKey)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(pairs) == 0 {
+			b.Fatalf("scan returned empty for range %s - %s", startKey, endKey)
 		}
 	}
 }

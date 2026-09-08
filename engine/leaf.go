@@ -15,8 +15,8 @@ var maxCapacity = 1000000
 
 func NewLeafNode() *LeafNode {
 	return &LeafNode{
-		key:   make([][]byte, 0, maxCapacity),
-		value: make([][]byte, 0, maxCapacity),
+		key:   make([][]byte, 0, maxBaseKeys+1),
+		value: make([][]byte, 0, maxBaseKeys+1),
 		next:  nil,
 	}
 }
