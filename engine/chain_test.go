@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestChainNode(t *testing.T) {
@@ -60,6 +61,8 @@ func TestChainNode(t *testing.T) {
 func TestChainNode_Consolidation(t *testing.T) {
 	chainNode := NewChainNode()
 
+	currentBase := chainNode.base.Load()
+
 	// Step 1: Populate base with initial values
 	testdata1 := []struct {
 		key   string
@@ -69,7 +72,7 @@ func TestChainNode_Consolidation(t *testing.T) {
 		{"apple", "red"},
 	}
 	for _, tc := range testdata1 {
-		err := chainNode.base.Put([]byte(tc.key), []byte(tc.value))
+		err := currentBase.Put([]byte(tc.key), []byte(tc.value))
 		if err != nil {
 			t.Fatalf("Failed to Put key %q to base: %v", tc.key, err)
 		}
@@ -106,13 +109,13 @@ func TestChainNode_Consolidation(t *testing.T) {
 	}
 
 	// Assert: apple should not exist (tombstone was honored)
-	apple, appleFound := chainNode.base.Get([]byte("apple"))
+	_, appleFound := chainNode.Get([]byte("apple"))
 	if appleFound {
-		t.Errorf("Expected apple to be deleted, but found value %q", string(apple))
+		t.Errorf("Expected apple to be deleted, but it was found")
 	}
 
 	// Assert: banana should be "yellow"
-	banana, bananaFound := chainNode.base.Get([]byte("banana"))
+	banana, bananaFound := chainNode.Get([]byte("banana"))
 	if !bananaFound {
 		t.Errorf("Expected to find banana after consolidation, but it was not found")
 	} else if string(banana) != "yellow" {
@@ -120,7 +123,7 @@ func TestChainNode_Consolidation(t *testing.T) {
 	}
 
 	// Assert: grape should be "purple" (survived from original base)
-	grape, grapeFound := chainNode.base.Get([]byte("grape"))
+	grape, grapeFound := chainNode.Get([]byte("grape"))
 	if !grapeFound {
 		t.Errorf("Expected to find grape after consolidation, but it was not found")
 	} else if string(grape) != "purple" {
@@ -143,7 +146,7 @@ func TestChainNode_AutoConsolidation(t *testing.T) {
 
 	// Assert: chainLen should be 7 and head should not be nil
 	if chainNode.chainLen.Load() != 7 {
-		t.Errorf("After 7 Puts, expected chainLen == 7, got %d", chainNode.chainLen)
+		t.Errorf("After 7 Puts, expected chainLen == 7, got %d", chainNode.chainLen.Load())
 	}
 	if chainNode.head.Load() == nil {
 		t.Errorf("After 7 Puts, expected chainNode.head to be non-nil")
@@ -155,9 +158,11 @@ func TestChainNode_AutoConsolidation(t *testing.T) {
 		t.Fatalf("Failed to Put key 7: %v", err)
 	}
 
+	time.Sleep(10 * time.Millisecond)
+
 	// Assert: After consolidation, chainLen should be 0 and head should be nil
 	if chainNode.chainLen.Load() != 0 {
-		t.Errorf("After auto-consolidation, expected chainLen == 0, got %d", chainNode.chainLen)
+		t.Errorf("After auto-consolidation, expected chainLen == 0, got %d", chainNode.chainLen.Load())
 	}
 	if chainNode.head.Load() != nil {
 		t.Errorf("After auto-consolidation, expected chainNode.head to be nil")
@@ -181,11 +186,13 @@ func TestChainNode_Split(t *testing.T) {
 	// 1. Initialize a clean ChainNode
 	c := NewChainNode()
 
+	currBase := c.base.Load()
+
 	// Populate the base with 4 keys directly into the base page
 	// using your Phase 1 sorting logic.
 	keys := []string{"a", "b", "c", "d"}
 	for _, k := range keys {
-		err := c.base.Put([]byte(k), []byte("val_"+k))
+		err := currBase.Put([]byte(k), []byte("val_"+k))
 		if err != nil {
 			t.Fatalf("Failed setup: couldn't put key %q: %v", k, err)
 		}
@@ -194,32 +201,35 @@ func TestChainNode_Split(t *testing.T) {
 	// 2. Perform the Split operation
 	pivot, right := c.Split()
 
+	rightBase := right.base.Load()
+
 	// 3. Verify the pivot key matches "c" (mid = 4 / 2 = 2)
 	expectedPivot := []byte("c")
 	if !bytes.Equal(pivot, expectedPivot) {
 		t.Errorf("Expected pivot key to be %q, got %q", string(expectedPivot), string(pivot))
 	}
 
-	// 4. Verify Left Node (c.base) boundaries contain exactly "a" and "b"
+	// 4. Verify Left Node boundaries contain exactly "a" and "b"
+	leftBase := c.base.Load() // <--- Load the newly installed immutable base page
 	expectedLeft := []string{"a", "b"}
-	if len(c.base.key) != len(expectedLeft) {
-		t.Errorf("Expected left node to have %d keys, got %d", len(expectedLeft), len(c.base.key))
+	if len(leftBase.key) != len(expectedLeft) {
+		t.Errorf("Expected left node to have %d keys, got %d", len(expectedLeft), len(leftBase.key))
 	} else {
 		for i, k := range expectedLeft {
-			if !bytes.Equal(c.base.key[i], []byte(k)) {
-				t.Errorf("Left node mismatch at index %d: expected %q, got %q", i, k, string(c.base.key[i]))
+			if !bytes.Equal(leftBase.key[i], []byte(k)) {
+				t.Errorf("Left node mismatch at index %d: expected %q, got %q", i, k, string(leftBase.key[i]))
 			}
 		}
 	}
 
 	// 5. Verify Right Node (right.base) boundaries contain exactly "c" and "d"
 	expectedRight := []string{"c", "d"}
-	if len(right.base.key) != len(expectedRight) {
-		t.Errorf("Expected right node to have %d keys, got %d", len(expectedRight), len(right.base.key))
+	if len(rightBase.key) != len(expectedRight) {
+		t.Errorf("Expected right node to have %d keys, got %d", len(expectedRight), len(rightBase.key))
 	} else {
 		for i, k := range expectedRight {
-			if !bytes.Equal(right.base.key[i], []byte(k)) {
-				t.Errorf("Right node mismatch at index %d: expected %q, got %q", i, k, string(right.base.key[i]))
+			if !bytes.Equal(rightBase.key[i], []byte(k)) {
+				t.Errorf("Right node mismatch at index %d: expected %q, got %q", i, k, string(rightBase.key[i]))
 			}
 		}
 	}
@@ -276,7 +286,7 @@ func BenchmarkChainNode_Get(b *testing.B) {
 	for i := 0; i < 1000; i++ {
 		keyString := fmt.Sprintf("%04d", i)
 		keyByte := []byte(keyString)
-		_ = chainNode.base.Put(keyByte, keyByte)
+		_ = chainNode.base.Load().Put(keyByte, keyByte)
 	}
 
 	// Add deltas to build a chain (simulate multiple updates)

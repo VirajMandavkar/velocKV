@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
+	"time"
 )
 
 func TestTree_RootSplit(t *testing.T) {
@@ -15,12 +16,23 @@ func TestTree_RootSplit(t *testing.T) {
 		keys[i] = fmt.Sprintf("key%04d", i)
 	}
 
-	for _, k := range keys {
+	for i, k := range keys {
 		err := tree.Put([]byte(k), []byte("val_"+k))
 		if err != nil {
 			t.Fatalf("Failed to put %s: %v", k, err)
 		}
+
+		// Allow the background consolidation worker to process the delta chain.
+		// Once it populates the base page, a subsequent Put will detect
+		// the size limit and push the split up to the Tree.
+		if i > 0 && i%8 == 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
+
+	// Force one last foreground Put to evaluate any remaining oversized base pages
+	// and trigger the final splits up the tree.
+	tree.Put([]byte("trigger_split"), []byte("val"))
 
 	// Verify the root and its children form a height-3 tree.
 	root, ok := tree.root.(*InternalNode)

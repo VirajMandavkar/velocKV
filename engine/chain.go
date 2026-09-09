@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"runtime"
 	"slices"
 	"sort"
 	"sync/atomic"
@@ -16,7 +17,7 @@ type DeltaNode struct {
 
 type ChainNode struct {
 	head            atomic.Pointer[DeltaNode]
-	base            *LeafNode
+	base            atomic.Pointer[LeafNode]
 	chainLen        atomic.Int64
 	next            *ChainNode
 	isConsolidating atomic.Bool
@@ -26,9 +27,8 @@ const defaultDeltaThreshold = 8
 const maxBaseKeys = 8
 
 func NewChainNode() *ChainNode {
-	node := &ChainNode{
-		base: NewLeafNode(),
-	}
+	node := &ChainNode{}
+	node.base.Store(NewLeafNode())
 	node.head.Store(nil)
 	node.chainLen.Store(0)
 	node.isConsolidating.Store(false)
@@ -61,7 +61,7 @@ func (c *ChainNode) Put(key []byte, value []byte) (pivot []byte, newChild Node, 
 		}()
 	}
 
-	if len(c.base.key) > maxBaseKeys {
+	if len(c.base.Load().key) > maxBaseKeys {
 		pivot, right := c.Split()
 		return pivot, right, nil
 	}
@@ -102,7 +102,7 @@ func (c *ChainNode) Get(key []byte) ([]byte, bool) {
 		}
 		header = header.next
 	}
-	return c.base.Get(key)
+	return c.base.Load().Get(key)
 }
 
 func (c *ChainNode) Consolidation() {
@@ -135,12 +135,13 @@ func (c *ChainNode) Consolidation() {
 		curr = curr.next
 	}
 
-	for i := 0; i < len(c.base.key); i++ {
-		basekey := c.base.key[i]
+	currentBase := c.base.Load()
+	for i := 0; i < len(currentBase.key); i++ {
+		basekey := currentBase.key[i]
 		if !seen[string(basekey)] {
 			pendingUpdates = append(pendingUpdates, update{
 				key:   basekey,
-				value: c.base.value[i],
+				value: currentBase.value[i],
 			})
 		}
 	}
@@ -151,7 +152,7 @@ func (c *ChainNode) Consolidation() {
 		_ = newBase.Put(rec.key, rec.value)
 	}
 
-	c.base = newBase
+	c.base.Store(newBase)
 
 	for {
 		livehead := c.head.Load()
@@ -169,7 +170,7 @@ func (c *ChainNode) Consolidation() {
 				curr = curr.next
 			}
 
-			if curr == nil && snapshot != nil {
+			if curr == nil {
 				return
 			}
 
@@ -186,19 +187,35 @@ func (c *ChainNode) Consolidation() {
 			c.chainLen.Store(int64(len(gapNodes)))
 			return
 		}
+		runtime.Gosched()
 	}
 }
 
 func (c *ChainNode) Split() (pivotKey []byte, rightNode *ChainNode) {
-	mid := len(c.base.key) / 2
-	pivotKey = c.base.key[mid]
+
+	for !c.isConsolidating.CompareAndSwap(false, true) {
+		runtime.Gosched()
+	}
+	defer c.isConsolidating.Store(false)
+
+	c.Consolidation()
+	currentBase := c.base.Load()
+
+	mid := len(currentBase.key) / 2
+	pivotKey = currentBase.key[mid]
+
 	rightNode = NewChainNode()
+	rightBase := rightNode.base.Load()
 
-	rightNode.base.key = append(rightNode.base.key, c.base.key[mid:]...)
-	rightNode.base.value = append(rightNode.base.value, c.base.value[mid:]...)
+	rightBase.key = append(rightBase.key, currentBase.key[mid:]...)
+	rightBase.value = append(rightBase.value, currentBase.value[mid:]...)
 
-	c.base.key = c.base.key[:mid]
-	c.base.value = c.base.value[:mid]
+	leftBase := NewLeafNode()
+	leftBase.key = append(leftBase.key, currentBase.key[:mid]...)
+	leftBase.value = append(leftBase.value, currentBase.value[:mid]...)
+
+	c.base.Store(leftBase)
+
 	rightNode.next = c.next
 	c.next = rightNode
 
@@ -248,16 +265,17 @@ func (c *ChainNode) ScanLeaf(start, end []byte) ([]KVPair, bool) {
 		return bytes.Compare(a.key, b.key)
 	})
 
+	currentBase := c.base.Load()
 	baseIdx := 0
 	if len(start) > 0 {
-		baseIdx = sort.Search(len(c.base.key), func(i int) bool {
-			return bytes.Compare(c.base.key[i], start) >= 0
+		baseIdx = sort.Search(len(currentBase.key), func(i int) bool {
+			return bytes.Compare(currentBase.key[i], start) >= 0
 		})
 	}
 
 	var basePairs []KVPair
-	for i := baseIdx; i < len(c.base.key); i++ {
-		bKey := c.base.key[i]
+	for i := baseIdx; i < len(currentBase.key); i++ {
+		bKey := currentBase.key[i]
 
 		if len(end) > 0 && bytes.Compare(bKey, end) >= 0 {
 			reachedEnd = true
@@ -270,7 +288,7 @@ func (c *ChainNode) ScanLeaf(start, end []byte) ([]KVPair, bool) {
 
 		basePairs = append(basePairs, KVPair{
 			Key:   bKey,
-			Value: c.base.value[i],
+			Value: currentBase.value[i],
 		})
 	}
 
