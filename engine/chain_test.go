@@ -101,7 +101,7 @@ func TestChainNode_Consolidation(t *testing.T) {
 	chainNode.Consolidation()
 
 	// Assert: head should be nil after consolidation
-	if chainNode.head != nil {
+	if chainNode.head.Load() != nil {
 		t.Errorf("Expected chainNode.head to be nil after Consolidation, but it is not")
 	}
 
@@ -142,10 +142,10 @@ func TestChainNode_AutoConsolidation(t *testing.T) {
 	}
 
 	// Assert: chainLen should be 7 and head should not be nil
-	if chainNode.chainLen != 7 {
+	if chainNode.chainLen.Load() != 7 {
 		t.Errorf("After 7 Puts, expected chainLen == 7, got %d", chainNode.chainLen)
 	}
-	if chainNode.head == nil {
+	if chainNode.head.Load() == nil {
 		t.Errorf("After 7 Puts, expected chainNode.head to be non-nil")
 	}
 
@@ -156,10 +156,10 @@ func TestChainNode_AutoConsolidation(t *testing.T) {
 	}
 
 	// Assert: After consolidation, chainLen should be 0 and head should be nil
-	if chainNode.chainLen != 0 {
+	if chainNode.chainLen.Load() != 0 {
 		t.Errorf("After auto-consolidation, expected chainLen == 0, got %d", chainNode.chainLen)
 	}
-	if chainNode.head != nil {
+	if chainNode.head.Load() != nil {
 		t.Errorf("After auto-consolidation, expected chainNode.head to be nil")
 	}
 

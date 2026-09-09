@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"slices"
 	"sort"
+	"sync/atomic"
 )
 
 type DeltaNode struct {
@@ -14,21 +15,24 @@ type DeltaNode struct {
 }
 
 type ChainNode struct {
-	head     *DeltaNode
-	base     *LeafNode
-	chainLen int
-	next     *ChainNode
+	head            atomic.Pointer[DeltaNode]
+	base            *LeafNode
+	chainLen        atomic.Int64
+	next            *ChainNode
+	isConsolidating atomic.Bool
 }
 
 const defaultDeltaThreshold = 8
 const maxBaseKeys = 8
 
 func NewChainNode() *ChainNode {
-	return &ChainNode{
-		head:     nil,
-		base:     NewLeafNode(),
-		chainLen: 0,
+	node := &ChainNode{
+		base: NewLeafNode(),
 	}
+	node.head.Store(nil)
+	node.chainLen.Store(0)
+	node.isConsolidating.Store(false)
+	return node
 }
 
 func NewDeltaNode(key []byte, value []byte, isTombstone bool, next *DeltaNode) *DeltaNode {
@@ -41,44 +45,53 @@ func NewDeltaNode(key []byte, value []byte, isTombstone bool, next *DeltaNode) *
 }
 
 func (c *ChainNode) Put(key []byte, value []byte) (pivot []byte, newChild Node, err error) {
-	newNode := NewDeltaNode(key, value, false, c.head)
-	c.head = newNode
-	c.chainLen++
-	if c.chainLen >= defaultDeltaThreshold {
-		c.Consolidation()
+	for {
+		oldHead := c.head.Load()
+		newNode := NewDeltaNode(key, value, false, oldHead)
+		if c.head.CompareAndSwap(oldHead, newNode) {
+			c.chainLen.Add(1)
+			break
+		}
 	}
+
+	if c.chainLen.Load() >= defaultDeltaThreshold && c.isConsolidating.CompareAndSwap(false, true) {
+		go func() {
+			defer c.isConsolidating.Store(false)
+			c.Consolidation()
+		}()
+	}
+
 	if len(c.base.key) > maxBaseKeys {
 		pivot, right := c.Split()
 		return pivot, right, nil
 	}
 	return nil, nil, nil
+
 }
 
-// func (c *ChainNode) logicalKeyCount() int {
-// 	newKeys := make(map[string]struct{})
-// 	for curr := c.head; curr != nil; curr = curr.next {
-// 		if _, found := newKeys[string(curr.key)]; found {
-// 			continue
-// 		}
-// 		if _, found := c.base.Get(curr.key); !found {
-// 			newKeys[string(curr.key)] = struct{}{}
-// 		}
-// 	}
-// 	return len(c.base.key) + len(newKeys)
-// }
-
 func (c *ChainNode) Delete(key []byte) bool {
-	tombNode := NewDeltaNode(key, nil, true, c.head)
-	c.head = tombNode
-	c.chainLen++
-	if c.chainLen >= defaultDeltaThreshold {
-		c.Consolidation()
+	for {
+		oldHead := c.head.Load()
+		newNode := NewDeltaNode(key, nil, true, oldHead)
+		if c.head.CompareAndSwap(oldHead, newNode) {
+			c.chainLen.Add(1)
+			break
+		}
 	}
+
+	if c.chainLen.Load() >= defaultDeltaThreshold && c.isConsolidating.CompareAndSwap(false, true) {
+		go func() {
+			defer c.isConsolidating.Store(false)
+			c.Consolidation()
+		}()
+	}
+
 	return true
+
 }
 
 func (c *ChainNode) Get(key []byte) ([]byte, bool) {
-	header := c.head
+	header := c.head.Load()
 	for header != nil {
 		comp := bytes.Compare(header.key, key)
 		if comp == 0 {
@@ -93,19 +106,21 @@ func (c *ChainNode) Get(key []byte) ([]byte, bool) {
 }
 
 func (c *ChainNode) Consolidation() {
-
-	if c.head == nil {
+	snapshot := c.head.Load()
+	if snapshot == nil {
 		return
 	}
-	seen := make(map[string]bool)
 
+	seen := make(map[string]bool)
 	type update struct {
 		key   []byte
 		value []byte
 	}
+
 	var pendingUpdates []update
 
-	curr := c.head
+	curr := snapshot
+
 	for curr != nil {
 		k := string(curr.key)
 		if !seen[k] {
@@ -137,8 +152,41 @@ func (c *ChainNode) Consolidation() {
 	}
 
 	c.base = newBase
-	c.head = nil
-	c.chainLen = 0
+
+	for {
+		livehead := c.head.Load()
+		var targetHead *DeltaNode
+		var gapNodes []*DeltaNode
+
+		if livehead == snapshot {
+			targetHead = nil
+		} else {
+
+			curr := livehead
+
+			for curr != nil && curr != snapshot {
+				gapNodes = append(gapNodes, curr)
+				curr = curr.next
+			}
+
+			if curr == nil && snapshot != nil {
+				return
+			}
+
+			var previousClonedNode *DeltaNode = nil
+			for i := len(gapNodes) - 1; i >= 0; i-- {
+				original := gapNodes[i]
+				clonedNode := NewDeltaNode(original.key, original.value, original.isTombstone, previousClonedNode)
+				previousClonedNode = clonedNode
+			}
+			targetHead = previousClonedNode
+		}
+
+		if c.head.CompareAndSwap(livehead, targetHead) {
+			c.chainLen.Store(int64(len(gapNodes)))
+			return
+		}
+	}
 }
 
 func (c *ChainNode) Split() (pivotKey []byte, rightNode *ChainNode) {
@@ -171,7 +219,7 @@ func (c *ChainNode) ScanLeaf(start, end []byte) ([]KVPair, bool) {
 		value       []byte
 		isTombStone bool
 	}
-	curr := c.head
+	curr := c.head.Load()
 	seen := make(map[string]bool)
 	var activeDeltas []deltaEntry
 
