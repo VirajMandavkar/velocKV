@@ -23,8 +23,8 @@ type ChainNode struct {
 	isConsolidating atomic.Bool
 }
 
-const defaultDeltaThreshold = 8
-const maxBaseKeys = 8
+const defaultDeltaThreshold = 64
+const maxBaseKeys = 256
 
 func NewChainNode() *ChainNode {
 	node := &ChainNode{}
@@ -93,8 +93,7 @@ func (c *ChainNode) Delete(key []byte) bool {
 func (c *ChainNode) Get(key []byte) ([]byte, bool) {
 	header := c.head.Load()
 	for header != nil {
-		comp := bytes.Compare(header.key, key)
-		if comp == 0 {
+		if bytes.Equal(header.key, key) {
 			if header.isTombstone {
 				return nil, false
 			}
@@ -146,15 +145,30 @@ func (c *ChainNode) Consolidation() {
 		}
 	}
 
-	newBase := NewLeafNode()
+	slices.SortFunc(pendingUpdates, func(a, b update) int {
+		return bytes.Compare(a.key, b.key)
+	})
 
-	for _, rec := range pendingUpdates {
-		_ = newBase.Put(rec.key, rec.value)
+	newBase := &LeafNode{
+		key:   make([][]byte, len(pendingUpdates)),
+		value: make([][]byte, len(pendingUpdates)),
+		next:  nil,
+	}
+
+	for i, rec := range pendingUpdates {
+		newBase.key[i] = rec.key
+		newBase.value[i] = rec.value
 	}
 
 	c.base.Store(newBase)
 
+	maxRetries := 3
+	retries := 0
+
 	for {
+		if retries >= maxRetries {
+			return
+		}
 		livehead := c.head.Load()
 		var targetHead *DeltaNode
 		var gapNodes []*DeltaNode
@@ -187,6 +201,7 @@ func (c *ChainNode) Consolidation() {
 			c.chainLen.Store(int64(len(gapNodes)))
 			return
 		}
+		retries++
 		runtime.Gosched()
 	}
 }

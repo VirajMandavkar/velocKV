@@ -1,6 +1,10 @@
 package engine
 
-import "bytes"
+import (
+	"bytes"
+	"slices"
+	"sort"
+)
 
 type Node interface {
 	Get(key []byte) ([]byte, bool)
@@ -22,31 +26,26 @@ type KVPair struct {
 	Value []byte
 }
 
-const maxInternalKeys = 5
+const maxInternalKeys = 64
+
+func (in *InternalNode) route(key []byte) int {
+	return sort.Search(len(in.key), func(i int) bool {
+		return bytes.Compare(key, in.key[i]) < 0
+	})
+}
 
 func (in *InternalNode) Get(key []byte) ([]byte, bool) {
 
-	for i := 0; i < len(in.key); i++ {
-		comp := bytes.Compare(key, in.key[i])
-		if comp < 0 {
-			return in.children[i].Get(key)
-		}
-	}
-	if len(in.children) > len(in.key) {
-		return in.children[len(in.key)].Get(key)
+	childIdx := in.route(key)
+	if childIdx < len(in.children) {
+		return in.children[childIdx].Get(key)
 	}
 	return nil, false
 }
 
 func (in *InternalNode) Put(key, value []byte) ([]byte, Node, error) {
 
-	childIdx := len(in.key)
-	for i := 0; i < len(in.key); i++ {
-		if bytes.Compare(key, in.key[i]) < 0 {
-			childIdx = i
-			break
-		}
-	}
+	childIdx := in.route(key)
 
 	pivot, newChild, err := in.children[childIdx].Put(key, value)
 	if err != nil {
@@ -56,13 +55,8 @@ func (in *InternalNode) Put(key, value []byte) ([]byte, Node, error) {
 		return nil, nil, nil
 	}
 
-	in.key = append(in.key, nil)
-	copy(in.key[childIdx+1:], in.key[childIdx:])
-	in.key[childIdx] = pivot
-
-	in.children = append(in.children, nil)
-	copy(in.children[childIdx+2:], in.children[childIdx+1:])
-	in.children[childIdx+1] = newChild
+	in.key = slices.Insert(in.key, childIdx, pivot)
+	in.children = slices.Insert(in.children, childIdx+1, newChild)
 
 	if len(in.key) > maxInternalKeys {
 		mid := len(in.key) / 2
@@ -83,14 +77,9 @@ func (in *InternalNode) Put(key, value []byte) ([]byte, Node, error) {
 }
 
 func (in *InternalNode) FindLeaf(start []byte) *ChainNode {
-	for i := 0; i < len(in.key); i++ {
-		comp := bytes.Compare(in.key[i], start)
-		if comp > 0 {
-			return in.children[i].FindLeaf(start)
-		}
-	}
-	if len(in.children) > len(in.key) {
-		return in.children[len(in.key)].FindLeaf(start)
+	childIdx := in.route(start)
+	if childIdx < len(in.children) {
+		return in.children[childIdx].FindLeaf(start)
 	}
 	return nil
 }

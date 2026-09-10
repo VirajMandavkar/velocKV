@@ -134,8 +134,8 @@ func TestChainNode_Consolidation(t *testing.T) {
 func TestChainNode_AutoConsolidation(t *testing.T) {
 	chainNode := NewChainNode()
 
-	// Step 1: Insert keys 0-6 (7 operations)
-	for i := 0; i < 7; i++ {
+	// Step 1: Insert keys up to (threshold - 1)
+	for i := 0; i < defaultDeltaThreshold-1; i++ {
 		keyString := fmt.Sprintf("%d", i)
 		keyByte := []byte(keyString)
 		_, _, err := chainNode.Put(keyByte, keyByte)
@@ -144,21 +144,22 @@ func TestChainNode_AutoConsolidation(t *testing.T) {
 		}
 	}
 
-	// Assert: chainLen should be 7 and head should not be nil
-	if chainNode.chainLen.Load() != 7 {
-		t.Errorf("After 7 Puts, expected chainLen == 7, got %d", chainNode.chainLen.Load())
+	// Assert: chainLen should be (threshold - 1) and head should not be nil
+	if chainNode.chainLen.Load() != int64(defaultDeltaThreshold-1) {
+		t.Errorf("After Puts, expected chainLen == %d, got %d", defaultDeltaThreshold-1, chainNode.chainLen.Load())
 	}
 	if chainNode.head.Load() == nil {
-		t.Errorf("After 7 Puts, expected chainNode.head to be non-nil")
+		t.Errorf("After Puts, expected chainNode.head to be non-nil")
 	}
 
-	// Step 2: Insert key 7 (8th operation - triggers auto-consolidation)
-	_, _, err := chainNode.Put([]byte("7"), []byte("7"))
+	// Step 2: Insert the final key (triggers auto-consolidation)
+	finalKey := fmt.Sprintf("%d", defaultDeltaThreshold-1)
+	_, _, err := chainNode.Put([]byte(finalKey), []byte(finalKey))
 	if err != nil {
-		t.Fatalf("Failed to Put key 7: %v", err)
+		t.Fatalf("Failed to Put key %s: %v", finalKey, err)
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(15 * time.Millisecond) // Give background worker time to finish
 
 	// Assert: After consolidation, chainLen should be 0 and head should be nil
 	if chainNode.chainLen.Load() != 0 {
@@ -168,8 +169,8 @@ func TestChainNode_AutoConsolidation(t *testing.T) {
 		t.Errorf("After auto-consolidation, expected chainNode.head to be nil")
 	}
 
-	// Step 3: Verify all 8 keys are retrievable
-	for i := 0; i < 8; i++ {
+	// Step 3: Verify all keys are retrievable
+	for i := 0; i < defaultDeltaThreshold; i++ {
 		keyString := fmt.Sprintf("%d", i)
 		val, found := chainNode.Get([]byte(keyString))
 		if !found {

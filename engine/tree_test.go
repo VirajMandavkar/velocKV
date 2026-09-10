@@ -10,8 +10,11 @@ import (
 func TestTree_RootSplit(t *testing.T) {
 	tree := &Tree{}
 
-	// Insert enough keys to trigger leaf and internal-node splits.
-	keys := make([]string, 100)
+	// Insert enough keys to trigger leaf and internal-node splits dynamically.
+	// A leaf splits at maxBaseKeys. An internal node splits at maxInternalKeys.
+	// We insert (maxBaseKeys * maxInternalKeys * 2) to guarantee a root split.
+	numKeys := maxBaseKeys * maxInternalKeys * 2
+	keys := make([]string, numKeys)
 	for i := range keys {
 		keys[i] = fmt.Sprintf("key%04d", i)
 	}
@@ -22,10 +25,9 @@ func TestTree_RootSplit(t *testing.T) {
 			t.Fatalf("Failed to put %s: %v", k, err)
 		}
 
-		// Allow the background consolidation worker to process the delta chain.
-		// Once it populates the base page, a subsequent Put will detect
-		// the size limit and push the split up to the Tree.
-		if i > 0 && i%8 == 0 {
+		// Allow the background consolidation worker to process the delta chain
+		// dynamically based on our delta threshold rather than a hardcoded 8.
+		if i > 0 && i%defaultDeltaThreshold == 0 {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
