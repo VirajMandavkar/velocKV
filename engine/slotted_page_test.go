@@ -161,3 +161,109 @@ func TestSlottedPage_InsertAndSeek(t *testing.T) {
 		t.Fatalf("expected insertion index 1 for 'apricot', got %d", missingIdx)
 	}
 }
+
+func TestSlottedPage_MutationsAndPrefix(t *testing.T) {
+	var page SlottedPage
+
+	// 1. Initialize Page with a Base Prefix: "/registry/pods/"
+	page.SetSlotCount(0)
+	page.SetFreeSpace(PageSize - HeaderSize)
+	page.SetDeadBytes(0)
+
+	basePrefix := []byte("/registry/pods/")
+	pfxLen := uint16(len(basePrefix))
+	pfxOffset := uint16(PageSize - pfxLen)
+
+	copy(page.data[pfxOffset:], basePrefix)
+	page.SetPrefixOffset(pfxOffset)
+	page.SetPrefixLen(pfxLen)
+	page.SetFreeSpace(page.GetFreeSpace() - pfxLen)
+
+	// 2. Test SplitKey
+	suf, matches := page.SplitKey([]byte("/registry/pods/nginx"))
+	if !matches || string(suf) != "nginx" {
+		t.Fatalf("SplitKey failed: matches=%v, suffix=%s", matches, string(suf))
+	}
+
+	_, mismatch := page.SplitKey([]byte("/registry/services/redis"))
+	if mismatch {
+		t.Fatalf("expected prefix mismatch for non-matching key")
+	}
+
+	// 3. Insert an inline record: key suffix "nginx", value "v1_medium_val"
+	ok := page.InsertRecord([]byte("nginx"), []byte("v1_medium_val"), false, 0)
+	if !ok {
+		t.Fatalf("failed to insert initial record")
+	}
+
+	// Verify Full Key Assembly
+	assembled, ok := page.AssembleFullKey(0, nil)
+	if !ok || string(assembled) != "/registry/pods/nginx" {
+		t.Fatalf("AssembleFullKey failed: got %s", string(assembled))
+	}
+
+	// 4. Test Case 1: In-Place Update (Shrink value: "v1_medium_val" -> "v2_short")
+	// Old val length = 13 ("v1_medium_val"), New val length = 8 ("v2_short") -> 5 slack bytes
+	ok = page.UpdateRecord([]byte("nginx"), []byte("v2_short"), false, 0)
+	if !ok {
+		t.Fatalf("in-place UpdateRecord failed")
+	}
+
+	if page.GetDeadBytes() != 5 {
+		t.Fatalf("expected 5 dead bytes from slack space, got %d", page.GetDeadBytes())
+	}
+
+	rawSlot := page.GetSlot(0)
+	off, _, sLen, vLen := UnpackSlot(rawSlot)
+	valOffset := off + uint32(sLen)
+	if string(page.data[valOffset:valOffset+uint32(vLen)]) != "v2_short" {
+		t.Fatalf("in-place value update content mismatch: got %s", page.data[valOffset:valOffset+uint32(vLen)])
+	}
+
+	// 5. Test Case 2: Out-of-Place Update (Grow value: "v2_short" -> "v3_substantially_longer_payload")
+	// Old payload was suffix (5) + val (8) = 13.
+	// Previous dead bytes = 5. After out-of-place append, dead bytes should jump to 5 + 13 = 18.
+	longVal := []byte("v3_substantially_longer_payload")
+	ok = page.UpdateRecord([]byte("nginx"), longVal, false, 0)
+	if !ok {
+		t.Fatalf("out-of-place UpdateRecord failed")
+	}
+
+	if page.GetDeadBytes() != 18 {
+		t.Fatalf("expected 18 dead bytes after out-of-place update, got %d", page.GetDeadBytes())
+	}
+
+	rawSlot = page.GetSlot(0)
+	newOff, _, sLen, vLen := UnpackSlot(rawSlot)
+	if newOff >= off {
+		t.Fatalf("expected new heap offset to move lower into page, but off=%d, newOff=%d", off, newOff)
+	}
+	valOffset = newOff + uint32(sLen)
+	if string(page.data[valOffset:valOffset+uint32(vLen)]) != string(longVal) {
+		t.Fatalf("out-of-place value content mismatch: got %s", page.data[valOffset:valOffset+uint32(vLen)])
+	}
+
+	// 6. Test Tombstone Deletion
+	ok = page.DeleteRecord([]byte("nginx"))
+	if !ok {
+		t.Fatalf("DeleteRecord failed")
+	}
+
+	// The payload was suffix (5) + longVal (31) = 36.
+	// Dead bytes should now be 18 + 36 = 54.
+	if page.GetDeadBytes() != 54 {
+		t.Fatalf("expected 54 dead bytes after delete, got %d", page.GetDeadBytes())
+	}
+
+	// Verify slot is tombstoned (valLen == 0)
+	rawSlot = page.GetSlot(0)
+	_, _, _, vLen = UnpackSlot(rawSlot)
+	if vLen != 0 {
+		t.Fatalf("expected valLen = 0 for tombstone, got %d", vLen)
+	}
+
+	// Double delete should fail
+	if page.DeleteRecord([]byte("nginx")) {
+		t.Fatalf("expected redundant delete to return false")
+	}
+}

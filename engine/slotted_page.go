@@ -101,6 +101,36 @@ func (p *SlottedPage) GetSlot(idx uint16) uint64 {
 	return binary.LittleEndian.Uint64(p.data[offset : offset+SlotSize])
 }
 
+// GetPrefixOffset returns the byte offset in p.data where the base prefix begins.
+func (p *SlottedPage) GetPrefixOffset() uint16 {
+	return binary.LittleEndian.Uint16(p.data[OffsetPrefixOffset : OffsetPrefixOffset+2])
+}
+
+// SetPrefixOffset sets the byte offset in p.data where the base prefix begins.
+func (p *SlottedPage) SetPrefixOffset(offset uint16) {
+	binary.LittleEndian.PutUint16(p.data[OffsetPrefixOffset:OffsetPrefixOffset+2], offset)
+}
+
+// GetPrefixLen returns the length in bytes of the base prefix.
+func (p *SlottedPage) GetPrefixLen() uint16 {
+	return binary.LittleEndian.Uint16(p.data[OffsetPrefixLen : OffsetPrefixLen+2])
+}
+
+// SetPrefixLen sets the length in bytes of the base prefix.
+func (p *SlottedPage) SetPrefixLen(length uint16) {
+	binary.LittleEndian.PutUint16(p.data[OffsetPrefixLen:OffsetPrefixLen+2], length)
+}
+
+// GetBasePrefix returns a slice referencing the shared prefix string in the page.
+func (p *SlottedPage) GetBasePrefix() []byte {
+	pLen := p.GetPrefixLen()
+	if pLen == 0 {
+		return nil
+	}
+	pOff := p.GetPrefixOffset()
+	return p.data[pOff : pOff+pLen]
+}
+
 // WriteSlot writes a packed 64-bit slot entry into a target buffer at byte offset.
 func WriteSlot(buf *[PageSize]byte, offset uint32, rawSlot uint64) {
 	binary.LittleEndian.PutUint64(buf[offset:offset+SlotSize], rawSlot)
@@ -208,4 +238,142 @@ func (p *SlottedPage) InsertRecord(suffix []byte, val []byte, isExt bool, arenaH
 	p.SetFreeSpace(p.GetFreeSpace() - needed)
 
 	return true
+}
+
+func (p *SlottedPage) DeleteRecord(suffix []byte) bool {
+	idx, found := p.SeekSlot(suffix)
+	if !found {
+		return false
+	}
+
+	rawSlot := p.GetSlot(idx)
+	offset, isExt, sufLen, valLen := UnpackSlot(rawSlot)
+
+	if valLen == 0 {
+		return false
+	}
+
+	var payLoadBytes uint32
+	if isExt {
+		payLoadBytes = uint32(sufLen) + 8
+	} else {
+		payLoadBytes = uint32(sufLen) + uint32(valLen)
+	}
+
+	p.SetDeadBytes(p.GetDeadBytes() + uint16(payLoadBytes))
+
+	newSlot := PackSlot(offset, isExt, sufLen, 0)
+
+	slotByteOffset := HeaderSize + int(idx)*SlotSize
+	WriteSlot(&p.data, uint32(slotByteOffset), newSlot)
+
+	return true
+}
+
+func (p *SlottedPage) UpdateRecord(suffix []byte, newVal []byte, isExt bool, arenaHandle uint64) bool {
+	idx, found := p.SeekSlot(suffix)
+	if !found {
+		return false
+	}
+
+	rawSlot := p.GetSlot(idx)
+	offset, oldIsExt, sufLen, oldValLen := UnpackSlot(rawSlot)
+	if oldValLen == 0 {
+		return false
+	}
+
+	newValLen := uint32(len(newVal))
+
+	if !oldIsExt && !isExt && newValLen <= uint32(oldValLen) {
+		valOffset := int(offset) + int(sufLen)
+		copy(p.data[valOffset:valOffset+int(newValLen)], newVal)
+
+		slack := uint32(oldValLen) - newValLen
+		if slack > 0 {
+			p.SetDeadBytes(p.GetDeadBytes() + uint16(slack))
+		}
+
+		newSlot := PackSlot(offset, false, sufLen, uint16(newValLen))
+		WriteSlot(&p.data, uint32(HeaderSize+(int(idx))*SlotSize), newSlot)
+
+		return true
+	}
+
+	var oldPayloadLen uint32
+	if oldIsExt {
+		oldPayloadLen = uint32(sufLen) + 8
+	} else {
+		oldPayloadLen = uint32(sufLen) + uint32(oldValLen)
+	}
+
+	var newPayloadLen uint32
+	if isExt {
+		newPayloadLen = uint32(sufLen) + 8
+	} else {
+		newPayloadLen = uint32(sufLen) + newValLen
+	}
+
+	slotEndOffset := uint32(HeaderSize) + uint32(p.GetSlotCount())*SlotSize
+	currentHeapBottom := slotEndOffset + uint32(p.GetFreeSpace())
+
+	if uint32(p.GetFreeSpace()) < newPayloadLen {
+		return false
+	}
+
+	newHeapOffset := currentHeapBottom - newPayloadLen
+
+	copy(p.data[newHeapOffset:], suffix)
+
+	dataWriteOffset := newHeapOffset + uint32(sufLen)
+	if isExt {
+		binary.LittleEndian.PutUint64(p.data[dataWriteOffset:], arenaHandle)
+	} else {
+		copy(p.data[dataWriteOffset:], newVal)
+	}
+
+	finalValLen := uint16(newValLen)
+
+	updatedSlot := PackSlot(newHeapOffset, isExt, sufLen, finalValLen)
+	WriteSlot(&p.data, uint32(HeaderSize+int(idx)*SlotSize), updatedSlot)
+
+	p.SetDeadBytes(p.GetDeadBytes() + uint16(oldPayloadLen))
+	p.SetFreeSpace(p.GetFreeSpace() - uint16(newPayloadLen))
+
+	return true
+}
+
+func (p *SlottedPage) AssembleFullKey(slotIdx uint16, dst []byte) ([]byte, bool) {
+	if slotIdx >= p.GetSlotCount() {
+		return nil, false
+	}
+
+	rawSlot := p.GetSlot(slotIdx)
+	offset, _, sufLen, _ := UnpackSlot(rawSlot)
+
+	pfx := p.GetBasePrefix()
+	totalKeyLen := len(pfx) + int(sufLen)
+
+	if cap(dst) < totalKeyLen {
+		dst = make([]byte, totalKeyLen)
+	} else {
+		dst = dst[:totalKeyLen]
+	}
+
+	copy(dst[:len(pfx)], pfx)
+	copy(dst[len(pfx):], p.data[offset:offset+uint32(sufLen)])
+
+	return dst, true
+}
+
+func (p *SlottedPage) SplitKey(fullKey []byte) ([]byte, bool) {
+	pfx := p.GetBasePrefix()
+	if len(pfx) == 0 {
+		return fullKey, true
+	}
+
+	if !bytes.HasPrefix(fullKey, pfx) {
+		return nil, false
+	}
+
+	return fullKey[len(pfx):], true
 }
