@@ -314,3 +314,78 @@ func TestSlottedPage_OLCReads(t *testing.T) {
 		t.Fatalf("expected tombstoned key to return false")
 	}
 }
+
+func TestSlottedPage_Split(t *testing.T) {
+	var page SlottedPage
+
+	// 1. Initialize page with a base prefix
+	page.SetSlotCount(0)
+	page.SetFreeSpace(PageSize - HeaderSize)
+	basePrefix := []byte("/data/")
+	pfxLen := uint16(len(basePrefix))
+	pfxOffset := uint16(PageSize - pfxLen)
+	copy(page.data[pfxOffset:], basePrefix)
+	page.SetPrefixOffset(pfxOffset)
+	page.SetPrefixLen(pfxLen)
+	page.SetFreeSpace(page.GetFreeSpace() - pfxLen)
+
+	// 2. Insert 4 records
+	records := []struct {
+		suffix string
+		val    string
+	}{
+		{"apple", "val_a"},
+		{"banana", "val_b"},
+		{"cherry", "val_c"},
+		{"date", "val_d"},
+	}
+
+	for _, r := range records {
+		if !page.InsertRecord([]byte(r.suffix), []byte(r.val), false, 0) {
+			t.Fatalf("failed to insert %s", r.suffix)
+		}
+	}
+
+	// 3. Trigger Split
+	pivot, rightPage := page.Split()
+
+	// Mid of 4 is 2. Slot 2 is "cherry".
+	if string(pivot) != "/data/cherry" {
+		t.Fatalf("expected pivot '/data/cherry', got '%s'", string(pivot))
+	}
+
+	// 4. Verify Left Page (should have apple, banana)
+	if page.GetSlotCount() != 2 {
+		t.Fatalf("expected left page to have 2 slots, got %d", page.GetSlotCount())
+	}
+	val, _, found := page.Get([]byte("/data/apple"))
+	if !found || string(val) != "val_a" {
+		t.Errorf("left page missing apple")
+	}
+	val, _, found = page.Get([]byte("/data/banana"))
+	if !found || string(val) != "val_b" {
+		t.Errorf("left page missing banana")
+	}
+	_, _, found = page.Get([]byte("/data/cherry"))
+	if found {
+		t.Errorf("left page should not contain cherry")
+	}
+
+	// 5. Verify Right Page (should have cherry, date)
+	if rightPage.GetSlotCount() != 2 {
+		t.Fatalf("expected right page to have 2 slots, got %d", rightPage.GetSlotCount())
+	}
+	val, _, found = rightPage.Get([]byte("/data/cherry"))
+	if !found || string(val) != "val_c" {
+		t.Errorf("right page missing cherry")
+	}
+	val, _, found = rightPage.Get([]byte("/data/date"))
+	if !found || string(val) != "val_d" {
+		t.Errorf("right page missing date")
+	}
+
+	// Verify prefix inheritance on right page
+	if string(rightPage.GetBasePrefix()) != "/data/" {
+		t.Errorf("right page did not inherit prefix correctly")
+	}
+}

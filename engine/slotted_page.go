@@ -38,31 +38,38 @@ func (p *SlottedPage) Compact(scratch *[PageSize]byte) {
 	nextSlotOffset := uint32(HeaderSize)
 	nextHeapOffset := uint32(PageSize)
 
+	// 1. Preserve the prefix in the scratch buffer
+	pfxLen := p.GetPrefixLen()
+	if pfxLen > 0 {
+		pfxOff := p.GetPrefixOffset()
+		nextHeapOffset -= uint32(pfxLen)
+		copy(scratch[nextHeapOffset:], p.data[pfxOff:pfxOff+pfxLen])
+
+		binary.LittleEndian.PutUint16(scratch[OffsetPrefixOffset:OffsetPrefixOffset+2], uint16(nextHeapOffset))
+		binary.LittleEndian.PutUint16(scratch[OffsetPrefixLen:OffsetPrefixLen+2], pfxLen)
+	}
+
 	slotCount := p.GetSlotCount()
 	var liveCount uint16 = 0
 
+	// 2. Compact remaining live slots
 	for i := uint16(0); i < slotCount; i++ {
 		rawSlot := p.GetSlot(i)
-		offset, isExt, sufLen, valLen := UnpackSlot(rawSlot)
 
-		// Drop tombstones entirely
+		offset, isExt, sufLen, valLen := UnpackSlot(rawSlot)
 		if valLen == 0 {
 			continue
 		}
 
-		// Calculate total payload size (suffix + value OR suffix + 8-byte arena handle)
 		var payloadLen uint32
 		if isExt {
-			payloadLen = uint32(sufLen) + 8
+			payloadLen = uint32(sufLen) + 8 // suffix + 8-byte arena handle
 		} else {
-			payloadLen = uint32(sufLen) + uint32(valLen)
+			payloadLen = uint32(sufLen) + uint32(valLen) // suffix + value
 		}
-
-		// Copy payload to scratch heap
 		nextHeapOffset -= payloadLen
 		copy(scratch[nextHeapOffset:], p.data[offset:offset+payloadLen])
 
-		// Pack new slot pointing to the updated heap offset
 		newRawSlot := PackSlot(nextHeapOffset, isExt, sufLen, valLen)
 		WriteSlot(scratch, nextSlotOffset, newRawSlot)
 
@@ -70,8 +77,8 @@ func (p *SlottedPage) Compact(scratch *[PageSize]byte) {
 		liveCount++
 	}
 
-	// Update scratch header metadata
 	freeSpaceRemaining := uint16(nextHeapOffset - nextSlotOffset)
+
 	binary.LittleEndian.PutUint16(scratch[OffsetSlotCount:OffsetSlotCount+2], liveCount)
 	binary.LittleEndian.PutUint16(scratch[OffsetFreeSpace:OffsetFreeSpace+2], freeSpaceRemaining)
 	binary.LittleEndian.PutUint16(scratch[OffsetDeadBytes:OffsetDeadBytes+2], 0)
@@ -485,4 +492,79 @@ func (p *SlottedPage) Get(fullKey []byte) ([]byte, bool, bool) {
 		// Validation failed (page was modified mid-read). Yield and retry.
 		runtime.Gosched()
 	}
+}
+
+// GetRightSibling returns the page ID or memory pointer of the right sibling.
+func (p *SlottedPage) GetRightSibling() uint64 {
+	return binary.LittleEndian.Uint64(p.data[OffsetRightSibling : OffsetRightSibling+8])
+}
+
+// SetRightSibling sets the page ID or memory pointer of the right sibling.
+func (p *SlottedPage) SetRightSibling(siblingID uint64) {
+	binary.LittleEndian.PutUint64(p.data[OffsetRightSibling:OffsetRightSibling+8], siblingID)
+}
+
+// Split divides the page in half, migrating the upper half of the slots to a new right sibling.
+// It returns the pivot key (full key at the median) and the new right SlottedPage.
+func (p *SlottedPage) Split() (pivotKey []byte, rightPage *SlottedPage) {
+	slotCount := p.GetSlotCount()
+	if slotCount < 2 {
+		return nil, nil
+	}
+
+	mid := slotCount / 2
+
+	// 1. Extract the Pivot Key (Full Key) before we mutate anything
+	pivotKey, _ = p.AssembleFullKey(mid, nil)
+
+	// 2. Initialize Right Page
+	rightPage = &SlottedPage{}
+	rightPage.SetSlotCount(0)
+	rightPage.SetFreeSpace(PageSize - HeaderSize)
+	rightPage.SetDeadBytes(0)
+
+	// 3. Inherit Base Prefix
+	pfx := p.GetBasePrefix()
+	if len(pfx) > 0 {
+		pfxLen := uint16(len(pfx))
+		pfxOffset := uint16(PageSize - pfxLen)
+		copy(rightPage.data[pfxOffset:], pfx)
+		rightPage.SetPrefixOffset(pfxOffset)
+		rightPage.SetPrefixLen(pfxLen)
+		rightPage.SetFreeSpace(rightPage.GetFreeSpace() - pfxLen)
+	}
+
+	// 4. Migrate Upper Half (Slots from mid to slotCount - 1)
+	for i := mid; i < slotCount; i++ {
+		rawSlot := p.GetSlot(i)
+		offset, isExt, sufLen, valLen := UnpackSlot(rawSlot)
+		if valLen == 0 {
+			continue
+		}
+		suffix := p.data[offset : offset+uint32(sufLen)]
+
+		var val []byte
+		var arenaHandle uint64
+
+		valOffset := offset + uint32(sufLen)
+
+		if isExt {
+			arenaHandle = binary.LittleEndian.Uint64(p.data[valOffset : valOffset+8])
+		} else {
+			val = p.data[valOffset : valOffset+uint32(valLen)]
+		}
+
+		_ = rightPage.InsertRecord(suffix, val, isExt, arenaHandle)
+	}
+
+	p.SetSlotCount(mid)
+
+	var scratch [PageSize]byte
+
+	p.Compact(&scratch)
+
+	copy(p.data[8:], scratch[8:])
+
+	return pivotKey, rightPage
+
 }
