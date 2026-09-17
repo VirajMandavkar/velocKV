@@ -267,3 +267,50 @@ func TestSlottedPage_MutationsAndPrefix(t *testing.T) {
 		t.Fatalf("expected redundant delete to return false")
 	}
 }
+
+func TestSlottedPage_OLCReads(t *testing.T) {
+	var page SlottedPage
+
+	// 1. Setup page with a base prefix
+	page.SetSlotCount(0)
+	page.SetFreeSpace(PageSize - HeaderSize)
+	basePrefix := []byte("/api/v1/")
+	pfxLen := uint16(len(basePrefix))
+	pfxOffset := uint16(PageSize - pfxLen)
+
+	copy(page.data[pfxOffset:], basePrefix)
+	page.SetPrefixOffset(pfxOffset)
+	page.SetPrefixLen(pfxLen)
+	page.SetFreeSpace(page.GetFreeSpace() - pfxLen)
+
+	// 2. Insert a record
+	ok := page.InsertRecord([]byte("users"), []byte("json_payload"), false, 0)
+	if !ok {
+		t.Fatalf("failed to insert")
+	}
+
+	// 3. Test Successful Get
+	val, isExt, found := page.Get([]byte("/api/v1/users"))
+	if !found || isExt || string(val) != "json_payload" {
+		t.Fatalf("Get failed: found=%v, isExt=%v, val=%s", found, isExt, string(val))
+	}
+
+	// 4. Test Missing Key (prefix match, suffix missing)
+	_, _, found = page.Get([]byte("/api/v1/roles"))
+	if found {
+		t.Fatalf("expected roles to be missing")
+	}
+
+	// 5. Test Missing Key (prefix mismatch)
+	_, _, found = page.Get([]byte("/api/v2/users"))
+	if found {
+		t.Fatalf("expected v2 users to be missing due to prefix mismatch")
+	}
+
+	// 6. Test Tombstone Rejection
+	page.DeleteRecord([]byte("users"))
+	_, _, found = page.Get([]byte("/api/v1/users"))
+	if found {
+		t.Fatalf("expected tombstoned key to return false")
+	}
+}
