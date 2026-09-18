@@ -12,6 +12,7 @@ import (
 // It avoids GC overhead by keeping all data within a flat byte array.
 type SlottedPage struct {
 	data [PageSize]byte
+	next *SlottedPage
 }
 
 // versionPtr returns an unsafe pointer to the first 8 bytes of the page,
@@ -495,13 +496,13 @@ func (p *SlottedPage) Get(fullKey []byte) ([]byte, bool, bool) {
 }
 
 // GetRightSibling returns the page ID or memory pointer of the right sibling.
-func (p *SlottedPage) GetRightSibling() uint64 {
-	return binary.LittleEndian.Uint64(p.data[OffsetRightSibling : OffsetRightSibling+8])
+func (p *SlottedPage) GetRightSibling() *SlottedPage {
+	return p.next
 }
 
 // SetRightSibling sets the page ID or memory pointer of the right sibling.
-func (p *SlottedPage) SetRightSibling(siblingID uint64) {
-	binary.LittleEndian.PutUint64(p.data[OffsetRightSibling:OffsetRightSibling+8], siblingID)
+func (p *SlottedPage) SetRightSibling(sibling *SlottedPage) {
+	p.next = sibling
 }
 
 // Split divides the page in half, migrating the upper half of the slots to a new right sibling.
@@ -564,6 +565,10 @@ func (p *SlottedPage) Split() (pivotKey []byte, rightPage *SlottedPage) {
 	p.Compact(&scratch)
 
 	copy(p.data[8:], scratch[8:])
+
+	// Link the B-Link tree siblings
+	rightPage.SetRightSibling(p.GetRightSibling()) // New page points to old right sibling
+	p.SetRightSibling(rightPage)                   // Left page points to new right page
 
 	return pivotKey, rightPage
 
