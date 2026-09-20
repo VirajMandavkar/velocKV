@@ -11,8 +11,9 @@ import (
 // SlottedPage represents a fixed 4KB block of memory.
 // It avoids GC overhead by keeping all data within a flat byte array.
 type SlottedPage struct {
-	data [PageSize]byte
-	next *SlottedPage
+	version uint64 // OLC version word
+	data    [PageSize]byte
+	next    *SlottedPage
 }
 
 // versionPtr returns an unsafe pointer to the first 8 bytes of the page,
@@ -572,4 +573,101 @@ func (p *SlottedPage) Split() (pivotKey []byte, rightPage *SlottedPage) {
 
 	return pivotKey, rightPage
 
+}
+
+// WriteLock atomically sets the version from even to odd.
+func (p *SlottedPage) WriteLock() {
+	for {
+		v := atomic.LoadUint64(&p.version)
+		if v%2 == 0 { // If unlocked
+			// Try to lock it by incrementing to an odd number
+			if atomic.CompareAndSwapUint64(&p.version, v, v+1) {
+				return
+			}
+		}
+		// Yield to prevent CPU hogging during contention
+		runtime.Gosched()
+	}
+}
+
+// WriteUnlock releases the lock by making the version even again.
+// Readers will see the new version and know the data changed.
+func (p *SlottedPage) WriteUnlock() {
+	atomic.AddUint64(&p.version, 1)
+}
+
+// MarkObsolete flags the page as logically deleted for concurrent readers,
+// and releases the write lock simultaneously.
+func (p *SlottedPage) MarkObsolete() {
+	for {
+		v := atomic.LoadUint64(&p.version)
+		// v is odd (locked). v+1 unlocks it. We bitwise OR the ObsoleteMask (Bit 1)
+		newV := (v + 1) | ObsoleteMask
+		if atomic.CompareAndSwapUint64(&p.version, v, newV) {
+			return
+		}
+	}
+}
+
+// MergeRight attempts to pull all live records from the right sibling into this page.
+// The caller must already hold the WriteLock on 'p'.
+func (p *SlottedPage) MergeRight(right *SlottedPage) (merged bool, obsoleteHandle uint64) {
+	right.WriteLock()
+
+	// 1. Calculate live payloads
+	leftLive := (PageSize - HeaderSize) - p.GetFreeSpace() - p.GetDeadBytes()
+	rightLive := (PageSize - HeaderSize) - right.GetFreeSpace() - right.GetDeadBytes()
+
+	// 2. Abort if they don't safely fit into a single 4KB page (with a small buffer)
+	if leftLive+rightLive > (PageSize - HeaderSize - 128) {
+		right.WriteUnlock()
+		return false, 0
+	}
+
+	// 3. Compact the left page to ensure physical contiguous space is available
+	var scratch [PageSize]byte
+	p.Compact(&scratch)
+	copy(p.data[8:], scratch[8:]) // Skip overwriting the version word
+
+	// 4. Migrate records
+	slotCount := right.GetSlotCount()
+	for i := uint16(0); i < slotCount; i++ {
+		rawSlot := right.GetSlot(i)
+		offset, isExt, sufLen, valLen := UnpackSlot(rawSlot)
+		if valLen == 0 {
+			continue // Skip right page tombstones
+		}
+
+		suffix := right.data[offset : offset+uint32(sufLen)]
+		fullKey, _ := right.AssembleFullKey(i, suffix)
+
+		valOffset := offset + uint32(sufLen)
+		var val []byte
+		var arenaHandle uint64
+
+		if isExt {
+			arenaHandle = binary.LittleEndian.Uint64(right.data[valOffset : valOffset+8])
+		} else {
+			val = right.data[valOffset : valOffset+uint32(valLen)]
+		}
+
+		// Adjust prefix if necessary to fit the left page's structure
+		leftSuffix, match := p.SplitKey(fullKey)
+		if !match {
+			p.SetPrefixLen(0)
+			leftSuffix = fullKey
+		}
+		p.InsertRecord(leftSuffix, val, isExt, arenaHandle)
+	}
+
+	// 5. Update B-Link pointer to skip the right page
+	p.SetRightSibling(right.GetRightSibling())
+
+	// 6. Mark Right as obsolete (this also unlocks it)
+	right.MarkObsolete()
+
+	// 7. Convert the dead page pointer to a uint64 handle for the EBR worker
+	handle := uint64(uintptr(unsafe.Pointer(right)))
+
+	return true, handle
 }

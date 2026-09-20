@@ -6,18 +6,18 @@ import (
 )
 
 func TestTree_Integration_PutAndScan(t *testing.T) {
-	tree := &Tree{}
+	tree := NewTree()
 	numRecords := 5000 // High enough to force multiple page splits and internal node growth
 
 	// 1. Insert 5000 records sequentially
 	for i := 0; i < numRecords; i++ {
 		key := []byte(fmt.Sprintf("user_%05d", i))
 		val := []byte(fmt.Sprintf("data_%05d", i))
-		tree.Put(key, val)
+		tree.Put(key, val, 0)
 	}
 
 	// 2. Point Lookup Verification
-	val, _, found := tree.Get([]byte("user_02500"))
+	val, _, found := tree.Get([]byte("user_02500"), 0)
 	if !found || string(val) != "data_02500" {
 		t.Fatalf("Failed to retrieve key 'user_02500', got: %s", string(val))
 	}
@@ -26,7 +26,7 @@ func TestTree_Integration_PutAndScan(t *testing.T) {
 	startKey := []byte("user_03000")
 	endKey := []byte("user_03100")
 
-	results := tree.Scan(startKey, endKey)
+	results := tree.Scan(startKey, endKey, 0)
 
 	// Should return exactly 100 records
 	if len(results) != 100 {
