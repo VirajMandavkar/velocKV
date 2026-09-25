@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"runtime"
 	"sync/atomic"
 	"unsafe"
@@ -11,9 +12,9 @@ import (
 // SlottedPage represents a fixed 4KB block of memory.
 // It avoids GC overhead by keeping all data within a flat byte array.
 type SlottedPage struct {
-	version uint64 // OLC version word
-	data    [PageSize]byte
-	next    *SlottedPage
+	// version uint64 // OLC version word
+	data [PageSize]byte
+	next *SlottedPage
 }
 
 // versionPtr returns an unsafe pointer to the first 8 bytes of the page,
@@ -173,18 +174,11 @@ func (p *SlottedPage) TryLock() (uint64, bool) {
 	return 0, false
 }
 
-// Unlock steps the version counter by 1 and clears the lock bit,
-// signaling to concurrent readers that a mutation has finished.
-func (p *SlottedPage) Unlock(oldVersion uint64) {
-	newVersion := oldVersion + VersionStep
-	atomic.StoreUint64(p.versionPtr(), newVersion)
-}
-
 // PublishScratch atomically overwrites the live page with compacted scratch data,
 // then releases the OLC write latch.
-func (p *SlottedPage) PublishScratch(scratch *[PageSize]byte, oldVersion uint64) {
+func (p *SlottedPage) PublishScratch(scratch *[PageSize]byte) {
 	copy(p.data[8:], scratch[8:]) // Skip overwriting the 8-byte version word
-	p.Unlock(oldVersion)
+	p.WriteUnlock()
 }
 
 // -----------------------------------------------------------------------------
@@ -425,6 +419,10 @@ func (p *SlottedPage) SplitKey(fullKey []byte) ([]byte, bool) {
 func (p *SlottedPage) ReadLockOrSpin() uint64 {
 	for {
 		v := atomic.LoadUint64(p.versionPtr())
+		if (v & ObsoleteMask) != 0 {
+			return math.MaxUint64
+		}
+
 		if v&LockMask == 0 {
 			return v
 		}
@@ -441,6 +439,10 @@ func (p *SlottedPage) Validate(initialVersion uint64) bool {
 
 func (p *SlottedPage) GetRecord(fullKey []byte) ([]byte, bool, bool) {
 	initialVersion := p.ReadLockOrSpin()
+
+	if initialVersion == math.MaxUint64 {
+		return nil, false, false // valid = false triggers a retry/traverse in Get()
+	}
 
 	suffix, matchesPrefix := p.SplitKey(fullKey)
 	if !matchesPrefix {
@@ -484,13 +486,38 @@ func (p *SlottedPage) GetRecord(fullKey []byte) ([]byte, bool, bool) {
 // if concurrent writers invalidate the optimistic read.
 // Returns: (payload, isExternal, found)
 func (p *SlottedPage) Get(fullKey []byte) ([]byte, bool, bool) {
+	curr := p
+
 	for {
-		val, isExt, valid := p.GetRecord(fullKey)
+		if curr == nil {
+			return nil, false, false
+		}
+		val, isExt, valid := curr.GetRecord(fullKey)
+
 		if valid {
-			// If valid is true, val is nil only if the key wasn't found or was tombstoned
-			return val, isExt, val != nil
+
+			if val != nil {
+				return val, isExt, true
+			}
+
+			if curr.GetRightSibling() != nil {
+				if curr.GetSlotCount() > 0 {
+					pivotKey, ok := curr.AssembleFullKey(curr.GetSlotCount()-1, nil)
+
+					if ok && bytes.Compare(fullKey, pivotKey) > 0 {
+						curr = curr.GetRightSibling()
+						continue
+					}
+				}
+			}
+			return nil, isExt, false
 		}
 
+		v := atomic.LoadUint64(curr.versionPtr())
+		if (v & ObsoleteMask) != 0 {
+			curr = curr.GetRightSibling()
+			continue
+		}
 		// Validation failed (page was modified mid-read). Yield and retry.
 		runtime.Gosched()
 	}
@@ -578,10 +605,9 @@ func (p *SlottedPage) Split() (pivotKey []byte, rightPage *SlottedPage) {
 // WriteLock atomically sets the version from even to odd.
 func (p *SlottedPage) WriteLock() {
 	for {
-		v := atomic.LoadUint64(&p.version)
-		if v%2 == 0 { // If unlocked
-			// Try to lock it by incrementing to an odd number
-			if atomic.CompareAndSwapUint64(&p.version, v, v+1) {
+		v := atomic.LoadUint64(p.versionPtr())
+		if (v & (LockMask | ObsoleteMask)) == 0 { // If unlocked
+			if atomic.CompareAndSwapUint64(p.versionPtr(), v, v|LockMask) {
 				return
 			}
 		}
@@ -593,17 +619,18 @@ func (p *SlottedPage) WriteLock() {
 // WriteUnlock releases the lock by making the version even again.
 // Readers will see the new version and know the data changed.
 func (p *SlottedPage) WriteUnlock() {
-	atomic.AddUint64(&p.version, 1)
+	v := atomic.LoadUint64(p.versionPtr())
+	newValue := (v + VersionStep) &^ LockMask
+	atomic.StoreUint64(p.versionPtr(), newValue)
 }
 
 // MarkObsolete flags the page as logically deleted for concurrent readers,
 // and releases the write lock simultaneously.
 func (p *SlottedPage) MarkObsolete() {
 	for {
-		v := atomic.LoadUint64(&p.version)
-		// v is odd (locked). v+1 unlocks it. We bitwise OR the ObsoleteMask (Bit 1)
-		newV := (v + 1) | ObsoleteMask
-		if atomic.CompareAndSwapUint64(&p.version, v, newV) {
+		v := atomic.LoadUint64(p.versionPtr())
+		newV := ((v + VersionStep) &^ LockMask) | ObsoleteMask
+		if atomic.CompareAndSwapUint64(p.versionPtr(), v, newV) {
 			return
 		}
 	}

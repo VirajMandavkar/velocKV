@@ -33,13 +33,13 @@ func TestSlottedPage_Compaction(t *testing.T) {
 	WriteSlot(&page.data, HeaderSize+(2*SlotSize), slot2)
 
 	// 2. Lock & Compact
-	v, ok := page.TryLock()
+	_, ok := page.TryLock()
 	if !ok {
 		t.Fatalf("expected lock acquisition to succeed")
 	}
 
 	page.Compact(&scratch)
-	page.PublishScratch(&scratch, v)
+	page.PublishScratch(&scratch)
 
 	// 3. Verify Header Post-Compaction
 	if page.GetSlotCount() != 2 {
@@ -84,7 +84,7 @@ func TestSlottedPage_Locking(t *testing.T) {
 	}
 
 	// Release
-	page.Unlock(v)
+	page.WriteUnlock()
 
 	// Verify incremented version counter and cleared lock mask
 	cur := *page.versionPtr()
