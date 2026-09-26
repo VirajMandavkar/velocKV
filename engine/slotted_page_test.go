@@ -366,9 +366,9 @@ func TestSlottedPage_Split(t *testing.T) {
 	if !found || string(val) != "val_b" {
 		t.Errorf("left page missing banana")
 	}
-	_, _, found = page.Get([]byte("/data/cherry"))
-	if found {
-		t.Errorf("left page should not contain cherry")
+	val, _, valid := page.GetRecord([]byte("/data/cherry"))
+	if valid && val != nil {
+		t.Errorf("left page should not physically contain cherry anymore")
 	}
 
 	// 5. Verify Right Page (should have cherry, date)

@@ -16,6 +16,7 @@ type InternalNode struct {
 	version  uint64        // OLC version word
 	keys     [][]byte      // N pivot keys
 	children []interface{} // N+1 children (can be *InternalNode or *SlottedPage)
+	next     *InternalNode //Pointer to the right internal node
 }
 
 func (n *InternalNode) WriteLock() {
@@ -115,6 +116,11 @@ func (t *Tree) Get(fullkey []byte, threadID int) ([]byte, bool, bool) {
 
 				// Safety check to prevent panic if a torn read sneaks through
 				if childIdx >= len(children) {
+
+					if node.next != nil {
+						node = node.next
+						continue
+					}
 					runtime.Gosched()
 					continue
 				}
@@ -163,6 +169,7 @@ func (t *Tree) Put(key, val []byte, threadID int) {
 		newRoot := &InternalNode{
 			keys:     [][]byte{pivot},
 			children: []interface{}{t.root, newChild},
+			next:     nil,
 		}
 		t.root = newRoot
 		t.mu.Unlock()
@@ -182,6 +189,10 @@ func putRecursive(node interface{}, key, val []byte) (pivot []byte, rightNode in
 			idx := n.Route(key)
 
 			if idx >= len(children) {
+				if n.next != nil {
+					n = n.next
+					continue
+				}
 				runtime.Gosched()
 				continue
 			}
@@ -213,6 +224,7 @@ func putRecursive(node interface{}, key, val []byte) (pivot []byte, rightNode in
 				rightInternal := &InternalNode{
 					keys:     append([][]byte(nil), n.keys[mid+1:]...),
 					children: append([]interface{}(nil), n.children[mid+1:]...),
+					next:     n.next,
 				}
 
 				// COW for the left side to protect concurrent lock-free readers
@@ -224,55 +236,212 @@ func putRecursive(node interface{}, key, val []byte) (pivot []byte, rightNode in
 				copy(newChildren, n.children[:mid+1])
 				n.children = newChildren
 
+				n.next = rightInternal
+
 				return upPivot, rightInternal
 			}
 		}
 		return nil, nil
 
 	case *SlottedPage:
-		n.WriteLock() // Lock the leaf before making ANY mutations
-		defer n.WriteUnlock()
 
-		suffix, match := n.SplitKey(key)
-		if match {
-			if n.UpdateRecord(suffix, val, false, 0) {
+		var lockedNode *SlottedPage = n
+		for {
+			// Defend against the nil void!
+			if lockedNode == nil {
 				return nil, nil
+			}
+
+			if !lockedNode.WriteLock() {
+				lockedNode = lockedNode.GetRightSibling()
+				continue
+			}
+
+			if lockedNode.GetRightSibling() != nil && lockedNode.GetSlotCount() > 0 {
+				pivotKey, ok := lockedNode.AssembleFullKey(lockedNode.GetSlotCount()-1, nil)
+				if ok && bytes.Compare(key, pivotKey) > 0 {
+					lockedNode.WriteUnlock()
+					lockedNode = lockedNode.GetRightSibling()
+					continue
+				}
+			}
+			break
+		}
+
+		defer lockedNode.WriteUnlock()
+
+		suffix, match := lockedNode.SplitKey(key)
+		if match {
+			// Try an in-place update first if the key is already present
+			if lockedNode.UpdateRecord(suffix, val, false, 0) {
+				return nil, nil
+			}
+
+			// Proactively dry-run check space capacity before applying insertion state changes
+			sufLen := uint16(len(suffix))
+			valLen := uint16(len(val))
+			if EvaluateCapacity(lockedNode.GetSlotCount(), (PageSize-HeaderSize)-lockedNode.GetFreeSpace()-lockedNode.GetDeadBytes(), 0, sufLen, valLen) {
+				if lockedNode.InsertRecord(suffix, val, false, 0) {
+					return nil, nil
+				}
 			}
 		}
 
-		if match && n.InsertRecord(suffix, val, false, 0) {
-			return nil, nil
-		}
+		// Either prefix mismatch or insufficient capacity space: perform structural leaf split
+		leafPivot, rightLeaf := lockedNode.Split()
 
-		leafPivot, rightLeaf := n.Split()
-
-		// Handle pages that are too empty to split (e.g. after heavy deletions)
+		// Handle degraded or heavily deleted pages that cannot split further
 		if rightLeaf == nil {
-			insertIntoLeaf(n, key, val)
+			insertIntoLeaf(lockedNode, key, val)
 			return nil, nil
 		}
 
+		// Route the record to its corresponding child boundary
 		cmp := bytes.Compare(key, leafPivot)
 		if cmp < 0 {
-			insertIntoLeaf(n, key, val)
+			if !insertIntoLeaf(lockedNode, key, val) {
+				// Fallback: If left page cannot accommodate due to prefix mismatch, pass right
+				insertIntoLeaf(rightLeaf, key, val)
+			}
 		} else {
 			insertIntoLeaf(rightLeaf, key, val)
 		}
 
 		return leafPivot, rightLeaf
-
 	default:
 		panic("unknown node type")
 	}
 }
 
-func insertIntoLeaf(p *SlottedPage, key, val []byte) {
+func deleteRecursive(node interface{}, key []byte, t *Tree) (bool, interface{}) {
+	switch n := node.(type) {
+	case *InternalNode:
+		//1. Lock-Free Descent
+		currNode := n
+		var child interface{}
+		for {
+			v := currNode.ReadLockOrSpin()
+			children := currNode.children
+			idx := currNode.Route(key)
+
+			if idx >= len(children) {
+				if currNode.next != nil {
+					currNode = currNode.next
+					continue
+				}
+				runtime.Gosched()
+				continue
+			}
+			if currNode.Validate(v) {
+				child = children[idx]
+				break
+			}
+		}
+		// 2. Descend to the next level
+		deleted, obsoleteChild := deleteRecursive(child, key, t)
+
+		// 3. The Ascent: A child died. We must remove its highway sign.
+		if obsoleteChild != nil {
+			currNode.WriteLock()
+
+			// Finding exactly which child died
+			targetIdx := -1
+			for i, c := range currNode.children {
+				if c == obsoleteChild {
+					targetIdx = i
+					break
+				}
+			}
+
+			if targetIdx != -1 {
+				// Copy-On-Write deletion to protect concurrent readers
+				newChildren := make([]interface{}, 0, len(currNode.children)-1)
+				newChildren = append(newChildren, currNode.children[:targetIdx]...)
+				newChildren = append(newChildren, currNode.children[targetIdx+1:]...)
+
+				// We also have to remove the corresponding routing key.
+				// If targetIdx is 0, we drop the first key. Otherwise, we drop targetIdx-1.
+				keyDropIdx := targetIdx
+				if keyDropIdx > 0 {
+					keyDropIdx--
+				}
+
+				newKeys := make([][]byte, 0, len(currNode.keys)-1)
+				if len(currNode.keys) > 0 {
+					newKeys = append(newKeys, currNode.keys[:keyDropIdx]...)
+					newKeys = append(newKeys, currNode.keys[keyDropIdx+1:]...)
+				}
+				currNode.children = newChildren
+				currNode.keys = newKeys
+			}
+			currNode.WriteUnlock()
+		}
+		return deleted, nil
+
+	case *SlottedPage:
+		// 1. Lock the page (with the detour sign!)
+		var lockedNode *SlottedPage = n
+		for {
+			if lockedNode == nil {
+				return false, nil
+			}
+			if !lockedNode.WriteLock() {
+				lockedNode = lockedNode.GetRightSibling()
+				continue
+			}
+			if lockedNode.GetRightSibling() != nil && lockedNode.GetSlotCount() > 0 {
+				pivotKey, ok := lockedNode.AssembleFullKey(lockedNode.GetSlotCount()-1, nil)
+				if ok && bytes.Compare(key, pivotKey) > 0 {
+					lockedNode.WriteUnlock()
+					lockedNode = lockedNode.GetRightSibling()
+					continue
+				}
+			}
+			break
+		}
+		defer lockedNode.WriteUnlock()
+
+		// 2. Perform the actual deletion
+		suffix, match := lockedNode.SplitKey(key)
+		if !match {
+			return false, nil
+		}
+
+		deleted := lockedNode.DeleteRecord(suffix)
+
+		// 3. Consolidation Check
+
+		if lockedNode.GetFreeSpace()+lockedNode.GetDeadBytes() > PageSize/2 {
+			right := lockedNode.GetRightSibling()
+			if right != nil {
+				merged, handle := lockedNode.MergeRight(right)
+				if merged {
+					// Tell the background GC to free the memory eventually
+					t.ebr.Retire(handle)
+					// Signal the parent InternalNode to delete the pointer right now!
+					return deleted, right
+				}
+			}
+		}
+		return deleted, nil
+	default:
+		panic("unknown node type")
+	}
+
+}
+
+func insertIntoLeaf(p *SlottedPage, key, val []byte) bool {
 	suffix, match := p.SplitKey(key)
 	if !match {
-		p.SetPrefixLen(0)
-		suffix = key
+		if p.GetSlotCount() == 0 {
+			p.SetPrefixLen(0)
+			return p.InsertRecord(key, val, false, 0)
+		}
+
+		return false
+
 	}
-	p.InsertRecord(suffix, val, false, 0)
+	return p.InsertRecord(suffix, val, false, 0)
 }
 
 // Copy-On-Write slice insertions to prevent concurrent bounds panics
@@ -313,6 +482,10 @@ func (t *Tree) Scan(startKey, endKey []byte, threadID int) []KVPair {
 				idx := node.Route(startKey)
 
 				if idx >= len(children) {
+					if node.next != nil {
+						node = node.next
+						continue
+					}
 					runtime.Gosched()
 					continue
 				}
@@ -343,8 +516,7 @@ func (t *Tree) Scan(startKey, endKey []byte, threadID int) []KVPair {
 				continue
 			}
 
-			suffix := leaf.data[offset : offset+uint32(sufLen)]
-			fullKey, _ := leaf.AssembleFullKey(i, suffix)
+			fullKey, _ := leaf.AssembleFullKey(i, nil)
 
 			if bytes.Compare(fullKey, startKey) < 0 {
 				continue
@@ -387,57 +559,8 @@ func (t *Tree) Delete(fullkey []byte, threadID int) bool {
 		return false
 	}
 
-	for {
-		switch node := curr.(type) {
-		case *InternalNode:
-			// OLC Read: spin until unlocked, route, and validate
-			for {
-				v := node.ReadLockOrSpin()
-				children := node.children
-				childIdx := node.Route(fullkey)
-
-				if childIdx >= len(children) {
-					runtime.Gosched()
-					continue
-				}
-
-				child := children[childIdx]
-				if node.Validate(v) {
-					curr = child
-					break
-				}
-			}
-		case *SlottedPage:
-			// Acquire the write latch before mutating
-			node.WriteLock()
-
-			suffix, match := node.SplitKey(fullkey)
-			if !match {
-				node.WriteUnlock()
-				return false
-			}
-
-			deleted := node.DeleteRecord(suffix)
-
-			// --- CONSOLIDATION HOOK ---
-			// If the page is more than 50% empty (free space + dead space), try to merge
-			if node.GetFreeSpace()+node.GetDeadBytes() > PageSize/2 {
-				right := node.GetRightSibling()
-				if right != nil {
-					merged, handle := node.MergeRight(right)
-					if merged {
-						// Pass the handle to the background worker for physical deletion
-						t.ebr.Retire(handle)
-					}
-				}
-			}
-
-			node.WriteUnlock()
-			return deleted
-		default:
-			panic("unknown node type in tree")
-		}
-	}
+	deleted, _ := deleteRecursive(curr, fullkey, t)
+	return deleted
 }
 
 // reclamationLoop runs in the background and physically frees memory

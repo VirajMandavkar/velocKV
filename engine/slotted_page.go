@@ -26,18 +26,21 @@ func (p *SlottedPage) versionPtr() *uint64 {
 // EvaluateCapacity performs a dry-run check to see if a new record (and potential
 // prefix shrinkage penalty) will fit within the physical 4096-byte limit.
 func EvaluateCapacity(existingRecords uint16, activePayloadBytes uint16, deltaPrefixLen uint16, newSuffixLen uint16, newValLen uint16) bool {
-	header := uint16(HeaderSize)
-	slots := (existingRecords + 1) * SlotSize
-	penalty := existingRecords * deltaPrefixLen // Space needed if prefix shrinks and existing suffixes expand
-	totalRequired := header + slots + activePayloadBytes + penalty + newSuffixLen + newValLen
+	header := uint64(HeaderSize)
+	slots := uint64(existingRecords+1) * uint64(SlotSize)
+	penalty := uint64(existingRecords) * uint64(deltaPrefixLen) // Space needed if prefix shrinks and existing suffixes expand
 
-	return totalRequired <= PageSize
+	totalRequired := header + slots + uint64(activePayloadBytes) + penalty + uint64(newSuffixLen) + uint64(newValLen)
+
+	return totalRequired <= uint64(PageSize)
 }
 
 // Compact performs an out-of-place defragmentation into a thread-local scratch buffer.
 // It purges tombstones (valLen == 0), tightly packs surviving payloads at the bottom of the heap,
 // and resets dead bytes to zero without interrupting concurrent readers on the live page.
 func (p *SlottedPage) Compact(scratch *[PageSize]byte) {
+	copy(scratch[0:HeaderSize], p.data[0:HeaderSize])
+
 	nextSlotOffset := uint32(HeaderSize)
 	nextHeapOffset := uint32(PageSize)
 
@@ -224,46 +227,52 @@ func (p *SlottedPage) InsertRecord(suffix []byte, val []byte, isExt bool, arenaH
 		return false
 	}
 
-	sufLen := uint16(len(suffix))
+	sufLen := uint32(len(suffix))
 	valLen := uint32(len(val))
 
 	var payloadLen uint32
 	if isExt {
-		payloadLen = uint32(sufLen) + 8
+		payloadLen = sufLen + 8
 	} else {
-		payloadLen = uint32(sufLen) + valLen
+		payloadLen = sufLen + valLen
 	}
 
-	needed := uint16(payloadLen + SlotSize)
-	if p.GetFreeSpace() < needed {
+	maxAllowedPayload := uint32(PageSize - HeaderSize)
+	if payloadLen > maxAllowedPayload || payloadLen+uint32(SlotSize) > maxAllowedPayload {
+		return false
+	}
+
+	needed := payloadLen + uint32(SlotSize)
+	freeSpaceAvailable := uint32(p.GetFreeSpace())
+	if freeSpaceAvailable < needed {
 		return false
 	}
 
 	slotCount := p.GetSlotCount()
-	currentHeapBottom := uint32(HeaderSize) + uint32(slotCount)*SlotSize + uint32(p.GetFreeSpace())
+	currentHeapBottom := uint32(HeaderSize) + uint32(slotCount)*SlotSize + freeSpaceAvailable
 	newHeapOffset := currentHeapBottom - payloadLen
 
 	// Write payload
 	copy(p.data[newHeapOffset:], suffix)
 	if isExt {
-		binary.LittleEndian.PutUint64(p.data[newHeapOffset+uint32(sufLen):], arenaHandle)
+		binary.LittleEndian.PutUint64(p.data[newHeapOffset+sufLen:], arenaHandle)
 	} else {
-		copy(p.data[newHeapOffset+uint32(sufLen):], val)
+		copy(p.data[newHeapOffset+sufLen:], val)
 	}
 
 	// Shift upper slots to make room
 	srcStart := HeaderSize + int(idx)*SlotSize
 	srcEnd := HeaderSize + int(slotCount)*SlotSize
 	if idx < slotCount {
-		copy(p.data[srcStart+SlotSize:srcEnd+SlotSize], p.data[srcStart:srcEnd])
+		copy(p.data[srcStart+int(SlotSize):srcEnd+int(SlotSize)], p.data[srcStart:srcEnd])
 	}
 
 	// Inject new slot descriptor
-	newSlot := PackSlot(newHeapOffset, isExt, sufLen, uint16(valLen))
+	newSlot := PackSlot(newHeapOffset, isExt, uint16(sufLen), uint16(valLen))
 	WriteSlot(&p.data, uint32(srcStart), newSlot)
 
 	p.SetSlotCount(slotCount + 1)
-	p.SetFreeSpace(p.GetFreeSpace() - needed)
+	p.SetFreeSpace(uint16(freeSpaceAvailable - needed))
 
 	return true
 }
@@ -299,8 +308,8 @@ func (p *SlottedPage) DeleteRecord(suffix []byte) bool {
 	return true
 }
 
-// UpdateRecord handles both in-place overwrites (if new value is <= old value)
-// and out-of-place heap appends (if new value expands).
+// UpdateRecord handles both in-place overwrites, out-of-place appends,
+// and resurrection of tombstoned records (where oldValLen == 0).
 func (p *SlottedPage) UpdateRecord(suffix []byte, newVal []byte, isExt bool, arenaHandle uint64) bool {
 	idx, found := p.SeekSlot(suffix)
 	if !found {
@@ -309,13 +318,52 @@ func (p *SlottedPage) UpdateRecord(suffix []byte, newVal []byte, isExt bool, are
 
 	rawSlot := p.GetSlot(idx)
 	offset, oldIsExt, sufLen, oldValLen := UnpackSlot(rawSlot)
-	if oldValLen == 0 {
-		return false // Can't update a tombstone directly
-	}
 
 	newValLen := uint32(len(newVal))
 
-	// Path 1: In-place update (generates slack space)
+	// Determine new payload length requirements
+	var newPayloadLen uint32
+	if isExt {
+		newPayloadLen = uint32(sufLen) + 8
+	} else {
+		newPayloadLen = uint32(sufLen) + newValLen
+	}
+
+	// -----------------------------------------------------------------------------
+	// Path 0: Resurrecting a Tombstoned Key (oldValLen == 0)
+	// -----------------------------------------------------------------------------
+	if oldValLen == 0 {
+		// Verify if the new payload fits within the page's current free space bounds
+		freeSpaceAvailable := uint32(p.GetFreeSpace())
+		if freeSpaceAvailable < newPayloadLen {
+			return false // Insufficient space; triggers tree-level split or compaction
+		}
+
+		slotCount := p.GetSlotCount()
+		currentHeapBottom := uint32(HeaderSize) + uint32(slotCount)*uint32(SlotSize) + freeSpaceAvailable
+		newHeapOffset := currentHeapBottom - newPayloadLen
+
+		// Write payload (suffix + value/handle)
+		copy(p.data[newHeapOffset:], suffix)
+		dataWriteOffset := newHeapOffset + uint32(sufLen)
+		if isExt {
+			binary.LittleEndian.PutUint64(p.data[dataWriteOffset:], arenaHandle)
+		} else {
+			copy(p.data[dataWriteOffset:], newVal)
+		}
+
+		// Overwrite the existing slot descriptor at the original idx
+		updatedSlot := PackSlot(newHeapOffset, isExt, sufLen, uint16(newValLen))
+		WriteSlot(&p.data, uint32(HeaderSize+int(idx)*SlotSize), updatedSlot)
+
+		// Adjust the page's remaining free space
+		p.SetFreeSpace(uint16(freeSpaceAvailable - newPayloadLen))
+		return true
+	}
+
+	// -----------------------------------------------------------------------------
+	// Path 1: In-place update (Active record, new value is smaller or equal)
+	// -----------------------------------------------------------------------------
 	if !oldIsExt && !isExt && newValLen <= uint32(oldValLen) {
 		valOffset := int(offset) + int(sufLen)
 		copy(p.data[valOffset:valOffset+int(newValLen)], newVal)
@@ -330,7 +378,9 @@ func (p *SlottedPage) UpdateRecord(suffix []byte, newVal []byte, isExt bool, are
 		return true
 	}
 
-	// Path 2: Out-of-place update (allocates new heap space, abandons old payload)
+	// -----------------------------------------------------------------------------
+	// Path 2: Out-of-place update (Active record expands, abandons old payload)
+	// -----------------------------------------------------------------------------
 	var oldPayloadLen uint32
 	if oldIsExt {
 		oldPayloadLen = uint32(sufLen) + 8
@@ -338,14 +388,7 @@ func (p *SlottedPage) UpdateRecord(suffix []byte, newVal []byte, isExt bool, are
 		oldPayloadLen = uint32(sufLen) + uint32(oldValLen)
 	}
 
-	var newPayloadLen uint32
-	if isExt {
-		newPayloadLen = uint32(sufLen) + 8
-	} else {
-		newPayloadLen = uint32(sufLen) + newValLen
-	}
-
-	slotEndOffset := uint32(HeaderSize) + uint32(p.GetSlotCount())*SlotSize
+	slotEndOffset := uint32(HeaderSize) + uint32(p.GetSlotCount())*uint32(SlotSize)
 	currentHeapBottom := slotEndOffset + uint32(p.GetFreeSpace())
 
 	if uint32(p.GetFreeSpace()) < newPayloadLen {
@@ -603,12 +646,15 @@ func (p *SlottedPage) Split() (pivotKey []byte, rightPage *SlottedPage) {
 }
 
 // WriteLock atomically sets the version from even to odd.
-func (p *SlottedPage) WriteLock() {
+func (p *SlottedPage) WriteLock() bool {
 	for {
 		v := atomic.LoadUint64(p.versionPtr())
-		if (v & (LockMask | ObsoleteMask)) == 0 { // If unlocked
+		if (v & ObsoleteMask) != 0 {
+			return false
+		}
+		if (v & LockMask) == 0 {
 			if atomic.CompareAndSwapUint64(p.versionPtr(), v, v|LockMask) {
-				return
+				return true
 			}
 		}
 		// Yield to prevent CPU hogging during contention
@@ -636,37 +682,77 @@ func (p *SlottedPage) MarkObsolete() {
 	}
 }
 
-// MergeRight attempts to pull all live records from the right sibling into this page.
-// The caller must already hold the WriteLock on 'p'.
+// / MergeRight attempts to pull all live records from the right sibling into this page.
 func (p *SlottedPage) MergeRight(right *SlottedPage) (merged bool, obsoleteHandle uint64) {
 	right.WriteLock()
 
-	// 1. Calculate live payloads
-	leftLive := (PageSize - HeaderSize) - p.GetFreeSpace() - p.GetDeadBytes()
-	rightLive := (PageSize - HeaderSize) - right.GetFreeSpace() - right.GetDeadBytes()
+	// Dry-run sizing constraints
+	leftLive := uint32(PageSize-HeaderSize) - uint32(p.GetFreeSpace()) - uint32(p.GetDeadBytes())
+	rightLive := uint32(PageSize-HeaderSize) - uint32(right.GetFreeSpace()) - uint32(right.GetDeadBytes())
 
-	// 2. Abort if they don't safely fit into a single 4KB page (with a small buffer)
-	if leftLive+rightLive > (PageSize - HeaderSize - 128) {
+	if leftLive+rightLive > uint32(PageSize-HeaderSize-128) {
 		right.WriteUnlock()
 		return false, 0
 	}
 
-	// 3. Compact the left page to ensure physical contiguous space is available
-	var scratch [PageSize]byte
-	p.Compact(&scratch)
-	copy(p.data[8:], scratch[8:]) // Skip overwriting the version word
-
-	// 4. Migrate records
 	slotCount := right.GetSlotCount()
+	var totalNeededSpace uint32 = 0
+
+	// --- PHASE 1: Strictly Read-Only Dry-Run Validation ---
+	for i := uint16(0); i < slotCount; i++ {
+		rawSlot := right.GetSlot(i)
+		_, _, sufLen, valLen := UnpackSlot(rawSlot)
+		if valLen == 0 {
+			continue
+		}
+
+		fullKey, ok := right.AssembleFullKey(i, nil)
+		if !ok {
+			right.WriteUnlock()
+			return false, 0
+		}
+
+		_, match := p.SplitKey(fullKey)
+		if !match {
+			right.WriteUnlock()
+			return false, 0 // Prefix compatibility failure abort
+		}
+
+		var payloadLen uint32
+		if (rawSlot & SlotExternalMask) != 0 {
+			payloadLen = uint32(sufLen) + 8
+		} else {
+			payloadLen = uint32(sufLen) + uint32(valLen)
+		}
+		totalNeededSpace += payloadLen + uint32(SlotSize)
+	}
+
+	// Validate space constraint against potential post-compaction real estate
+	maxPossibleFreeSpace := uint32(PageSize-HeaderSize) - leftLive
+	if totalNeededSpace > maxPossibleFreeSpace {
+		right.WriteUnlock()
+		return false, 0
+	}
+
+	// --- PHASE 2: Safe Execution & Mutation ---
+	// Clean Up Compaction Trigger (Minor Optimization)
+	// Only compact if free space is fragmented and insufficient for the upcoming batch
+	if uint32(p.GetFreeSpace()) < totalNeededSpace {
+		var scratch [PageSize]byte
+		p.Compact(&scratch)
+		copy(p.data[8:], scratch[8:]) // Safe from torn reads because p is WriteLocked
+	}
+
+	// Migrate elements securely
 	for i := uint16(0); i < slotCount; i++ {
 		rawSlot := right.GetSlot(i)
 		offset, isExt, sufLen, valLen := UnpackSlot(rawSlot)
 		if valLen == 0 {
-			continue // Skip right page tombstones
+			continue
 		}
 
-		suffix := right.data[offset : offset+uint32(sufLen)]
-		fullKey, _ := right.AssembleFullKey(i, suffix)
+		fullKey, _ := right.AssembleFullKey(i, nil)
+		leftSuffix, _ := p.SplitKey(fullKey)
 
 		valOffset := offset + uint32(sufLen)
 		var val []byte
@@ -678,23 +764,12 @@ func (p *SlottedPage) MergeRight(right *SlottedPage) (merged bool, obsoleteHandl
 			val = right.data[valOffset : valOffset+uint32(valLen)]
 		}
 
-		// Adjust prefix if necessary to fit the left page's structure
-		leftSuffix, match := p.SplitKey(fullKey)
-		if !match {
-			p.SetPrefixLen(0)
-			leftSuffix = fullKey
-		}
 		p.InsertRecord(leftSuffix, val, isExt, arenaHandle)
 	}
 
-	// 5. Update B-Link pointer to skip the right page
 	p.SetRightSibling(right.GetRightSibling())
+	right.SetRightSibling(p)
+	right.MarkObsolete() // Flags obsolete and unlocks right sibling node securely
 
-	// 6. Mark Right as obsolete (this also unlocks it)
-	right.MarkObsolete()
-
-	// 7. Convert the dead page pointer to a uint64 handle for the EBR worker
-	handle := uint64(uintptr(unsafe.Pointer(right)))
-
-	return true, handle
+	return true, uint64(uintptr(unsafe.Pointer(right)))
 }
