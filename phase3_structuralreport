@@ -1,0 +1,269 @@
+## 1. Modifications Needed from Current Structure
+
+The codebase currently implements a lock-free delta-chain variant inspired by the Bw-tree (`ChainNode` with atomic pointers to linked `DeltaNode` elements pointing down to a flat `LeafNode` slice array). It relies entirely on dynamic heap allocations, Go garbage collection, and unsynchronized slice mutations in `InternalNode`.
+
+To reach the target architecture—a **B-Link Tree with Optimistic Lock Coupling (OLC), Prefix-Truncated Slotted Pages, and EBR-backed Overflow Storage**—the following components must be retired, rewritten, or introduced:
+
+```
+Current Architecture (Bw-Tree Derivative)      Target Architecture (B-Link + OLC + Slotted Pages)
+------------------------------------------      --------------------------------------------------
+[InternalNode (slices.Insert, no locks)]        [InternalNode (OLC, High-Key, Separator Truncation)]
+                 │                                                │
+                 ▼                                                ▼
+     [ChainNode (atomic delta chain)]           [SlottedPage Leaf (Fixed 4KB/8KB Arena Block)]
+                 │                               ├── 32-Byte Header (64-bit Version, HighKey, Sibling)
+                 ▼                               ├── 8-Byte Slot Array [Offset | SuffixLen | ValLen]
+     [LeafNode (dynamic [][]byte)]               ├── Payload Heap (Base Prefix + Suffixes + Inline Vals)
+                                                 └── External Overflow Arena (EBR Managed for >Page Vals)
+
+```
+
+### Components to Deprecate and Remove
+
+* **`DeltaNode` and `ChainNode` (`chain.go`):** The entire delta-chain mechanism (`head atomic.Pointer[DeltaNode]`, background `Consolidation()`, dedup map allocation, and dynamic delta-to-base merging) is removed. Delta-chains scatter memory reads and destroy cache locality during K8s range scans.
+
+
+* **Dynamic Heap Slices (`leaf.go` and `tree.go`):** `key [][]byte` and `value [][]byte` managed via `slices.Insert` and `slices.Delete` are eliminated. These cause GC pressure, non-deterministic latency spikes, and unsafe memory reallocations under concurrent access.
+
+
+* **Recursive Unprotected Tree Traversal:** `InternalNode.Put()` and `Tree.Put()` mutating node slices without latches are removed.
+
+
+
+### Components to Introduce and Refactor
+
+* **`SlottedPage` (New Leaf Engine):** A fixed 4KB (or 8KB) contiguous byte block.
+* *Header (32 Bytes):* Atomic 64-bit Version Word, 8-byte Right-Sibling Pointer, 2-byte Slot Count, 2-byte Free Space Offset, 2-byte Dead Byte Count, 4-byte Base Prefix Coordinates, 4-byte High-Key Coordinates, 2-byte alignment padding.
+* *Slot Array:* Array of 8-byte entries: `[31-bit Offset | 1-bit External Tag | 16-bit Suffix Len | 16-bit Value Len]`.
+* *Payload Heap:* Downward/upward growing arena storing the local Base Prefix, unique key suffixes, and raw inline values.
+
+
+* **Optimistic Lock Coupling (OLC) State Machine:** Replaces `atomic.Pointer` swap chains.
+
+
+* Bit 0: Micro-latch (writer exclusivity).
+* Bit 1: Obsolete/Tombstone marker (node split or dead).
+* Bits 2–63: Monotonic write version counter.
+
+
+* **Epoch-Based Reclamation (EBR) Engine:** A central subsystem to manage external allocations (values $> 1\text{KB}$ to $1.5\text{MB}$) and retired page memory, tracking a 3-bin generational quarantine (`Bin[0]`, `Bin[1]`, `Bin[2]`) and padded reader slots.
+* **B-Link Internal Node Router:** Internal nodes updated to store bounded separator keys (truncated to minimum distinguishing prefixes) and horizontal sibling pointers to eliminate top-down latch crabbing during splits.
+
+---
+
+## 2. End-to-End Element Movement and Concurrency Flow
+
+```
+====================================================================================================
+                        READ PATH: Point Lookup & Range Scan (Wait-Free)
+====================================================================================================
+
+      Client Search Key: "/registry/pods/default/nginx-01"
+                           │
+                           ▼
+                 [ Read GlobalEpoch ] ──► Register thread in padded ReaderSlots[id]
+                           │
+                           ▼
+              [ Traverse Internal Nodes ] ──► (Optimistic version validation at each hop)
+                           │
+                           ▼
+                  [ Arrive at Leaf L ]
+                           │
+    ┌──────────────────────┴──────────────────────┐
+    ▼                                             ▼
+Atomic Load Version Word                     Target Key > L.HighKey?
+(If Bit 0 == 1: backoff & retry)                  │
+    │                                    YES ─────┴───── NO
+    ▼                                     │              │
+Match against L.BasePrefix:               ▼              ▼
+Matches "/registry/pods/default/"   Follow Sibling   Binary Search Slot Array
+    │                               to Right Node R   using stripped suffix: "nginx-01"
+    ▼                               (Step-Right)         │
+Strip prefix -> "nginx-01"                               ▼
+                                                     Found Slot?
+                                                         │
+                                        YES ─────────────┴───────────── NO
+                                         │                              │
+                        Inspect Slot Bit 31 (External Tag)         Return Not Found
+                                         │
+                    ┌────────────────────┴────────────────────┐
+                    ▼ (Bit 31 == 0)                           ▼ (Bit 31 == 1)
+           Read Inline Value from                     Resolve 64-bit Address:
+           L's local Payload Heap               ArenaBase[ArenaID] + ChunkOffset
+                    │                                         │
+                    │                                Read 50KB JSON Payload
+                    │                                from EBR-Quarantined Arena
+                    └────────────────────┬────────────────────┘
+                                         │
+                                         ▼
+                             Atomic Re-read Version Word
+                             (Must match snapshot & Bit 0 == 0 & Bit 1 == 0)
+                                         │
+                         MATCH ──────────┴────────── MISMATCH (Split or Write Collision)
+                           │                               │
+                           ▼                               ▼
+                 Deregister ReaderSlot              Discard Buffer & Retry
+                 and Return Value                   from Current Node or Root
+
+```
+
+```
+====================================================================================================
+                       WRITE PATH: Mutation & Split (Micro-Latched)
+====================================================================================================
+
+      Client Write: Key = "/registry/pods/default/redis", Value = [Bytes]
+                           │
+                           ▼
+              [ Traverse to Target Leaf L ]
+                           │
+                           ▼
+               [ CAS Latch Bit 0: 0 -> 1 ]
+                           │
+    ┌──────────────────────┴──────────────────────┐
+    ▼                                             ▼
+Is Value > Page Overflow Threshold?         Is New Key outside L.BasePrefix?
+(e.g., > 1024 bytes)                              │
+    │                                    YES ─────┴───── NO
+    │                                     │              │
+    ├─► YES: Allocate block in            │              ▼
+    │        EBR Arena; set Slot          │     Normal Insert:
+    │        Bit 31 = 1; store Handle     │     Append suffix to Payload Heap,
+    │                                     │     insert 8-byte slot in sorted order
+    └─► NO:  Plan for Inline storage      │              │
+                                          ▼              │
+                   [ Phase A: Capacity Dry-Run ]         │
+                   ΔP = Len(OldPrefix) - Len(NewPrefix)  │
+                   RequiredBytes = Header + Slots        │
+                     + ExistingPayload + (N * ΔP)        │
+                     + NewSuffix + NewVal                │
+                                          │              │
+                    OVERFLOW ─────────────┴───────────── FITS IN PAGE
+                       │                                 │
+                       ▼                                 ▼
+             [ Forced Pre-Split ]               Rebuild page in scratch buffer:
+     1. Allocate Right Node R from Arena        re-expand suffixes, add new record,
+     2. Move upper N/2 keys to R                memcpy over L.
+     3. R.Sibling = L.Sibling; R.HighKey = L.HighKey     │
+     4. L.HighKey = Pivot; L.Sibling = R                 │
+     5. Latch L, increment version, unlock               ▼
+     6. Enqueue Deferred Parent Update ◄──────── [ Commit & Unlock ]
+     7. Route incoming write to L or R           Increment Monotonic Version,
+                                                 Clear Bit 0 (Lock).
+
+```
+
+### Edge-Case Handling
+
+* **Prefix Collapse Across Heterogeneous Keys:** When keys with diverging prefixes enter the same node (e.g., `/registry/services` into a `/registry/pods` node), Phase A detects that the expansion penalty $(N \times \Delta P)$ will exceed page capacity. The pre-split isolates keys into smaller sub-ranges, preventing live payload memory corruption.
+* **Writer-Reader Collision During Step-Right:** If a reader follows a sibling pointer while the target sibling node is actively undergoing another split, the reader's post-read version check flags Bit 0 or Bit 1, causing it to discard read scratch buffers and step right again.
+* **Range-Scan Sibling Traversal:** Long-running range scans (`List` operations) track bounds against each leaf's local `BasePrefix` and `HighKey`. When crossing node boundaries via horizontal pointers, prefix restoration is performed locally per page, avoiding global stalls.
+
+---
+
+## 3. Current Project Status and Transition Roadmap
+
+### Where the Codebase Stands Today
+
+* **`chain.go` & `chain_test.go`:** Functional prototype of a Bw-tree delta chain. Consolidates via a temporary hash map (`seen map[string]bool`) and dynamic slice allocation. Suffers from high GC pressure, pointer-chasing overhead, and slice race hazards under parallel load.
+
+
+* **`leaf.go` & `leaf_test.go`:** Flat array backing store using Go's `slices.BinarySearchFunc`, `slices.Insert`, and `slices.Delete`. Lacks micro-latches, alignment padding, and slotted page offset management.
+
+
+* **`tree.go` & `tree_test.go`:** Height-growing tree prototype. Uses recursive top-down navigation without concurrency control or sibling linking in internal nodes.
+
+
+* **`lifecycle_bench_test.go`:** Full lifecycle benchmark suite covering sequential/random puts, updates, point reads, deletes, and range scans. Provides the empirical baseline against which the new engine's allocations and latencies will be measured.
+
+
+
+### Next Immediate Implementation Tasks
+
+1. **Define Binary Memory Offsets:** Write the byte-level constants and bitmasks for the 32-byte header and 8-byte slot records in a dedicated package file.
+2. **Implement `SlottedPage` Scratch Rebuilder:** Build the Phase A dry-run validation function and the single-page scratch compaction logic.
+3. **Implement EBR Allocator Skeleton:** Create the 3-bin generational quarantine and padded reader slot array for managing out-of-page value buffers.
+4. **Wire B-Link Traversal:** Update `Tree.Scan` and `Tree.Get` to utilize optimistic version checking, `HighKey` validation, and horizontal sibling traversal.
+
+Every single critique from the mentor is spot-on. They called out the exact places where concurrent hand-waving turns into race conditions under load.
+
+Let's address each gap directly, nail down the mechanical invariants, and lock in the revised execution order.
+
+---
+
+### Closing the 5 Gaps
+
+**1. Split Latch Ordering & The Publication Barrier**
+The mentor is highlighting memory ordering across CPU cores. If Core 1 writes bytes to node $R$ and stores $R$'s pointer into $L$, Core 2 might see the pointer to $R$ before Core 2's cache sees the initialized contents of $R$, resulting in an uninitialized memory read.
+
+* **The Invariant:** Node $R$ is constructed entirely off to the side in thread-local scratch space. It is completely unreachable.
+* **The Hardware Sequence:**
+1. Latch $L$ (Bit 0 = 1).
+2. Write all bytes into $R$ (Version = 0, Lock = 0, Obsolete = 0, contents populated).
+3. Issue an atomic **Release Store** / Memory Barrier.
+4. Set $L.\text{RightSibling} = R$.
+5. Update $L$'s High-Key to the split pivot.
+6. Increment $L$'s version counter and clear Bit 0 (Lock = 0) with an atomic **Release Store**.
+
+
+* *Result:* Because $R$ is published via an atomic release store on $L$, any reader that observes $L$'s new pointer is mathematically guaranteed to observe $R$'s fully initialized payload. $R$ does not even need to be latched during creation because it is immutable and invisible until step 4.
+
+**2. Tightening "Retry from Current Node vs. Root"**
+"Or Root" was lazy phrasing. Let’s eliminate the ambiguity:
+
+* **Leaf-Level Collision:** Reader is inside Leaf $L$. A write or split commits on $L$.
+* *Action:* **Local Retry.** The reader simply re-reads $L$'s version and evaluates its High-Key. If the target key exceeds $L$'s High-Key, it follows the sibling pointer right ($L \rightarrow R$). **It never restarts from the root.**
+
+
+* **When Root Restart Is Legitimate:** Root restarts are reserved **exclusively** for internal node traversals. If an internal routing node splits while a reader is determining which child pointer to take, and the version revalidation fails, the reader re-reads that internal node's separator keys. If the internal node was marked Obsolete (Bit 1 = 1), only then does it restart from the root.
+
+**3. Concrete Deferred Parent Update Mechanism**
+We will not use a separate background goroutine or asynchronous channel queue right away—that introduces cross-goroutine scheduling latency and makes testing non-deterministic.
+
+* **The Mechanism: Synchronous In-Thread Propagation with Cooperative Stealing.**
+1. Immediately after committing the local leaf split and dropping $L$'s latch, the **same writer thread** attempts to acquire the parent latch.
+2. If the parent is uncontended, it inserts the pivot separator and unlocks. Total elapsed time: $\sim 30$ nanoseconds.
+3. If the parent latch is contested, the thread pushes the update into a fixed ring-buffer queue (`PendingParentQueue`) attached to the subtree root and returns success to the client immediately.
+4. Any subsequent writer that latches the parent node first checks this ring buffer and applies pending sibling pivots before performing its own insert.
+
+
+* *Reclamation Safety:* Sibling pages are never freed while chained; they only become unreachable after an internal merge (deletion), which will flow through the standard 3-bin EBR quarantine.
+
+**4. Uniform OLC on Internal Nodes**
+Internal nodes will use the exact same 64-bit Version Word state machine as leaf nodes.
+
+* Bit 0 = Writer latch.
+* Bit 1 = Obsolete.
+* Bits 2–63 = Monotonic counter.
+* Readers traverse down internal nodes optimistically: load version, read separator/child pointer, validate version. If valid, descend. One concurrency discipline across the entire tree.
+
+**5. Phase A Dry-Run Unit Test Boundary**
+The prefix-collapse edge case ($N \times \Delta P$) is non-linear.
+
+* We will add an explicit unit test with 100 keys sharing a 30-byte namespace prefix. We will simulate inserting a single key that collapses the prefix to 0 bytes, asserting that Phase A predicts an overflow, returns `ErrCapacityExceeded`, and triggers the pre-split without mutating a single byte of the original page.
+
+---
+
+### Revised Task Sequencing
+
+The mentor’s advice to reorder the sequence is correct:
+
+```
+[Old Order]  1. Memory Layout  ──►  2. SlottedPage Rebuilder  ──►  3. EBR Skeleton  ──►  4. B-Link Traversal
+                                            ▲                           │
+                                            └───── Needs Overflow ──────┘
+
+[New Order]  1. Memory Layout  ──►  2. EBR Skeleton  ──►  3. SlottedPage Rebuilder  ──►  4. B-Link Traversal
+
+```
+
+By building the **EBR Skeleton** first, the `SlottedPage` rebuilder can immediately handle the overflow hand-off (storing external arena handles) without needing temporary stub functions.
+
+Let's begin with **Task 1: Memory Layout & Binary Offsets**.
+
+Define the exact constants, coordinate fields, and bitmasks for:
+
+1. The 32-byte page header byte offsets (`0` to `31`).
+2. The 8-byte slot entry bitmask layout (handling the MSB External Flag, 31-bit Offset, Suffix Len, and Value Len).
+
+Write down the exact byte-offset mapping for the 32-byte header now.
