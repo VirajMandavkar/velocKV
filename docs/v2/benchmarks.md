@@ -12,7 +12,7 @@
 - Delete benchmark rebuilds the tree every N deletions
 
 ## Results
- see [`docs/v2/benchstat.txt`](docs/v2/benchstat.txt)
+ see [`docs/v2/benchstat.txt`](benchstat.txt)
 
 ## Claims vs. Measured (1M keys, i5-1235U P-core, 10 runs)
 
