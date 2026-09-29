@@ -1,0 +1,442 @@
+BenchmarkTree_Concurrent/n=100000/Put_Random_Parallel-12         	==================
+WARNING: DATA RACE
+Write at 0x00c000098948 by goroutine 41:
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:217 +0x505
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Previous read at 0x00c000098948 by goroutine 44:
+  velocakv/engine.(*InternalNode).Route()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:41 +0x45
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:189 +0x15a
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Goroutine 41 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+
+Goroutine 44 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+==================
+==================
+WARNING: DATA RACE
+Write at 0x00c000098960 by goroutine 41:
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:218 +0x717
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Previous read at 0x00c000098960 by goroutine 49:
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:188 +0x11d
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Goroutine 41 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+
+Goroutine 49 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+==================
+==================
+WARNING: DATA RACE
+Write at 0x00c00084b008 by goroutine 42:
+  velocakv/engine.(*SlottedPage).SetRightSibling()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/slotted_page.go:576 +0xd19
+  velocakv/engine.(*SlottedPage).Split()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/slotted_page.go:642 +0xd0c
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:291 +0x1447
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Previous read at 0x00c00084b008 by goroutine 38:
+  velocakv/engine.(*SlottedPage).GetRightSibling()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/slotted_page.go:571 +0x1129
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:264 +0x111c
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Goroutine 42 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+
+Goroutine 38 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+==================
+==================
+WARNING: DATA RACE
+Write at 0x00c000098948 by goroutine 47:
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:217 +0x505
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Previous read at 0x00c000098948 by goroutine 42:
+  velocakv/engine.(*InternalNode).Route()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:41 +0x45
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:189 +0x15a
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Goroutine 47 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+
+Goroutine 42 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+==================
+==================
+WARNING: DATA RACE
+Write at 0x00c00082a020 by goroutine 39:
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:218 +0x717
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Previous read at 0x00c00082a020 by goroutine 40:
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:188 +0x11d
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Goroutine 39 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+
+Goroutine 40 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+==================
+==================
+WARNING: DATA RACE
+Read at 0x00c000920008 by goroutine 41:
+  runtime.slicecopy()
+      /usr/local/go/src/runtime/slice.go:392 +0x0
+  velocakv/engine.(*SlottedPage).Compact()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/slotted_page.go:42 +0x5c
+  velocakv/engine.(*SlottedPage).Split()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/slotted_page.go:636 +0xc6d
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:291 +0x1447
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Previous write at 0x00c000920008 by goroutine 47:
+  sync/atomic.CompareAndSwapInt64()
+      /usr/local/go/src/runtime/race_amd64.s:367 +0xb
+  sync/atomic.CompareAndSwapUint64()
+      <autogenerated>:1 +0x1a
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:255 +0xfbd
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Goroutine 41 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+
+Goroutine 47 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+==================
+==================
+WARNING: DATA RACE
+Write at 0x00c000983608 by goroutine 47:
+  velocakv/engine.(*SlottedPage).SetRightSibling()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/slotted_page.go:576 +0xd19
+  velocakv/engine.(*SlottedPage).Split()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/slotted_page.go:642 +0xd0c
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:291 +0x1447
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Previous read at 0x00c000983608 by goroutine 42:
+  velocakv/engine.(*SlottedPage).GetRightSibling()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/slotted_page.go:571 +0x1129
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:264 +0x111c
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Goroutine 47 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+
+Goroutine 42 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+==================
+--- FAIL: BenchmarkTree_Concurrent/n=100000/Put_Random_Parallel-12
+    testing.go:1712: race detected during execution of test
+--- FAIL: BenchmarkTree_Concurrent/n=100000
+BenchmarkTree_Concurrent/n=1000000/Put_Random_Parallel-12        	==================
+WARNING: DATA RACE
+Read at 0x00c003dbc008 by goroutine 75:
+  runtime.slicecopy()
+      /usr/local/go/src/runtime/slice.go:392 +0x0
+  velocakv/engine.(*SlottedPage).Compact()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/slotted_page.go:42 +0x5c
+  velocakv/engine.(*SlottedPage).Split()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/slotted_page.go:636 +0xc6d
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:291 +0x1447
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Previous write at 0x00c003dbc008 by goroutine 78:
+  sync/atomic.CompareAndSwapInt64()
+      /usr/local/go/src/runtime/race_amd64.s:367 +0xb
+  sync/atomic.CompareAndSwapUint64()
+      <autogenerated>:1 +0x1a
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:255 +0xfbd
+  velocakv/engine.putRecursive()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:207 +0x284
+  velocakv/engine.(*Tree).Put()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree.go:165 +0x1e8
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:250 +0x2b2
+  testing.(*B).RunParallel.func1()
+      /usr/local/go/src/testing/benchmark.go:982 +0x1bc
+
+Goroutine 75 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+
+Goroutine 78 (running) created at:
+  testing.(*B).RunParallel()
+      /usr/local/go/src/testing/benchmark.go:975 +0x284
+  velocakv/engine.BenchmarkTree_Concurrent.func1.1()
+      /home/kernelghost/Desktop/projects/go/VelocaKV/engine/tree_bench_test.go:245 +0x1bb
+  testing.(*B).runN()
+      /usr/local/go/src/testing/benchmark.go:219 +0x2c2
+  testing.(*B).launch()
+      /usr/local/go/src/testing/benchmark.go:347 +0x14a
+  testing.(*B).doBench.gowrap1()
+      /usr/local/go/src/testing/benchmark.go:296 +0x2e
+==================
+--- FAIL: BenchmarkTree_Concurrent/n=1000000/Put_Random_Parallel-12
+    testing.go:1712: race detected during execution of test
+--- FAIL: BenchmarkTree_Concurrent/n=1000000

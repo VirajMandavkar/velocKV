@@ -18,12 +18,12 @@
 
 | | Count |
 |---|---|
-| Bugs | 22 (4 Critical: P19, P22, P23, P42) |
+| Bugs | 24 (4 Critical: P19, P22, P23, P42) |
 | Debts | 21 |
 | Not a flaw | 1 |
-| **Total** | **44** |
+| **Total** | **46** |
 
-P1–P39 were found during the v2 masterclass; P40–P44 while writing these documents.
+P1–P39 were found during the v2 masterclass; P40–P44 while writing these documents; P45–P46 from race-detector and correctness-guard evidence.
 
 ## Summary
 
@@ -73,6 +73,8 @@ P1–P39 were found during the v2 masterclass; P40–P44 while writing these doc
 | [P42](#p42) | Oversized records silently dropped | Bug | **Critical** | Fixed |
 | [P43](#p43) | Unbounded optimistic retries | Debt | Medium | Fixed |
 | [P44](#p44) | Merge headroom too small | Debt | Medium | Fixed |
+| [P45](#p45) | Version word copied with plain memory ops | Bug | Medium | Fixed |
+| [P46](#p46) | Mixed workload corrupts key order | Bug | High | Fixed |
 
 ---
 
@@ -504,6 +506,7 @@ P1–P39 were found during the v2 masterclass; P40–P44 while writing these doc
 **Type:** Bug · **Severity:** High · **Affects:** [§13](./v2-architecture.md#s13), [§14](./v2-architecture.md#s14)
 **Evidence:** `slotted_page.go` → readers use `binary.LittleEndian` loads and slicing on `p.data`; writers use `copy` and `binary.LittleEndian.Put*`. Sibling pointers are set with plain assignments in `Split` and `MergeRight`.
 **Trigger:** `go test -race` running any concurrent Get/Put workload reports a data race.
+**Measured:** `go test -race` on the guarded benchmarks fails all 4 concurrent sub-benchmarks. Put-only (`Put_Random_Parallel`, 12 goroutines): 8 races, 3 distinct conflicts — sibling pointer (this item), [P34](#p34), [P45](#p45). The mixed workload adds unvalidated leaf reads in `Get` and `Scan` ([P25](#p25), [P37](#p37)).
 
 **What happens.** Optimistic locking deliberately lets readers observe concurrent writes, but under the Go memory model a data race permits the implementation to report it and terminate, and nothing orders the data loads before the validating version load. The same issue is well known for seqlocks in C++.
 
@@ -542,6 +545,38 @@ P1–P39 were found during the v2 masterclass; P40–P44 while writing these doc
 **v3 resolution.** After 16 failed attempts the reader takes the write lock for that read (v3 plan § Concurrency).
 
 **Verify.** Hot-page benchmark: reader p99 latency stays bounded while a writer loops.
+
+<a id="p45"></a>
+### P45 · The version word is copied with plain memory operations
+
+**Type:** Bug · **Severity:** Medium · **Affects:** [§13](./v2-architecture.md#s13)
+**Evidence:** `slotted_page.go` → `Compact` copies `p.data[0:HeaderSize]`, version word included, into scratch with `copy`; `Split` copies scratch back over the page with `copy`. Elsewhere the same word is accessed with `atomic.CompareAndSwapUint64` (`tree.go`, write-lock acquisition).
+**Trigger:** `go test -race` with concurrent `Put`: race between `Compact` (slotted_page.go:42) and the CAS at tree.go:255.
+
+**What happens.** A word that other goroutines access atomically is read and rewritten with plain memmove. The value survives in practice because the splitting writer holds the lock, so the snapshot equals the live value, but the language does not guarantee the store is a single untorn 8-byte write.
+
+**Impact.** Latent: no observed corruption, but a memory-model violation on the one word the whole concurrency scheme depends on.
+
+**v3 resolution.** The version word is only ever touched through `atomic` operations; compaction and split copy from the first byte after the header word.
+
+**Verify.** `go test -race` concurrent-put stress test reports no race on the version word.
+
+<a id="p46"></a>
+### P46 · Mixed parallel workload corrupts key order
+
+**Type:** Bug · **Severity:** High · **Affects:** [§14](./v2-architecture.md#s14), [§16](./v2-architecture.md#s16)
+**Evidence:** `docs/v2/bench-run2-corruption.txt` line 274–275.
+**Trigger:** `go test -bench MixedWorkload_Parallel -benchmem -count=10 ./engine` with the guarded benchmark (`verifyScan` after `RunParallel`). Reproduces in ~1 of 10 runs.
+
+**What happens.** After a 12-goroutine mixed workload (40% Put, 40% Get, 15% Delete, 5% Scan), a full-range scan returned `key-00084295` before `key-00084209` — a backward jump of ~86 keys, roughly one page. The tree's sort invariant is broken.
+
+**Impact.** Silent data corruption: a range query returns wrong results; a point lookup may miss a key that exists.
+
+**Cause.** Unconfirmed. Candidate root causes: [P32](#p32) (scan follows dead back-pointer), [P33](#p33) (cross-parent merge), [P34](#p34) (torn inner-node swap), [P36](#p36) (racing root splits).
+
+**v3 resolution.** Inner nodes become slotted pages in the arena; mutations use OLC write-lock; root is swapped with atomic CAS; merge is same-parent only with restart-from-root on obsolete.
+
+**Verify.** `verifyScan` guard passes with `-count=100` on all parallel benchmarks.
 
 ---
 
